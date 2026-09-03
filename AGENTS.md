@@ -84,9 +84,13 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection never depe
 | Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, 5 pages, ~1 s poll |
 | Sketch entry | `MotorProtection.ino` | done |
 
-Boot Serial prints AP SSID/password/IP, dashboard login, and free heap. Heap is also logged after each web response and ~1 s in the protection task.
+Boot Serial prints AP SSID/password/IP, dashboard login, and free heap. Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected. Bench heap after login ~207 kB.
 
-Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**, Core Debug Level **Debug**. Libraries: ESPAsyncWebServer + AsyncTCP (ESP32Async).
+Protection samples ADC **outside** the status mutex (copy channel zeros, sample, then re-lock to apply I²t). Calibrate copies channels out, runs ADC, copies zeros back — never holds the mutex across `analogRead`. Buzzer uses Arduino-ESP32 3.x LEDC: `ledcAttach(pin,freq,res)`, `ledcWrite(pin,duty)`, `ledcChangeFrequency(PIN_BUZZER, freq, 10)` (3-arg; 2-arg does not compile on 3.x).
+
+Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**, Core Debug Level **Debug**. Libraries: ESPAsyncWebServer + AsyncTCP (ESP32Async forks).
+
+User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MANUAL.md`.
 
 ## Open questions and assumptions
 
@@ -133,8 +137,15 @@ Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**,
 
 ### Still open (none blocking v1)
 
-- Exact Arduino IDE board-menu checkboxes beyond Flash 16 MB / OPI PSRAM (USB CDC on boot, etc.) — will use sensible Dev Module defaults and document them in the sketch comments
-- Whether a physical SD card will be present on the first bench test — firmware treats both cases as valid
+- Exact Arduino IDE board-menu checkboxes beyond Flash 16 MB / OPI PSRAM (USB CDC on boot, etc.) — documented as Dev Module defaults in `docs/USER_MANUAL.md`
+- Physical SD card on first bench test — firmware treats missing card as valid (`SD: mount failed — fault log unavailable`)
+
+## Bench notes (do not regress)
+
+- AP password `mps505` (6 chars) failed WPA2 association — must stay `mps50005` (≥ 8).
+- HTTP Basic Auth was replaced at user request; dashboard is `/login` + cookie `mps_sess` (HttpOnly, SameSite=Strict, 8 h). Dashboard login `mps` / `mps500` is **not** the AP password.
+- Holding the protection mutex across ADC sample windows starved the web snapshot — sample off-mutex.
+- Missing SD is a warning, not a boot failure.
 
 ## Next planned steps
 
@@ -142,4 +153,4 @@ Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**,
 2. Inject current / short a sense pin to verify I²t, stall, and SENSOR_FAULT trips
 3. Confirm missing-SD path (log page banner) and present-SD CSV write
 
-Committed at user request.
+Last firmware commit: `3b7a424`. Docs (`AGENTS.md`, `docs/USER_MANUAL.md`) follow.
