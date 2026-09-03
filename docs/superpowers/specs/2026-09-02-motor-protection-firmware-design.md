@@ -1,0 +1,349 @@
+# ESP32-S3 Programmable Motor Protection Firmware — Design
+
+Date: 2026-09-02
+Status: Approved. v1 firmware implemented in `MotorProtection/` (not compiled in this environment, not committed).
+Scope: ESP32-S3 firmware only. Sensors, relays, SD breakout, and buzzer are treated as already wired.
+
+## 1. Purpose
+
+Replace a bimetallic thermal overload relay with a microcontroller I²t protector. The firmware measures motor current, accumulates I²t energy, and trips relay(s) before the motor overheats. It also provides live monitoring, configurable multi-step trip curves, fault logging, and a desktop web dashboard on the ESP32 SoftAP.
+
+Correctness and code clarity matter more than polish. This is a university engineering project.
+
+## 2. Locked decisions
+
+| Topic | Decision |
+|---|---|
+| Toolchain | Arduino IDE sketch (folder + `.ino` + `.h`/`.cpp` tabs) |
+| Board | ESP32-S3-N16R8 (16 MB flash, 8 MB octal PSRAM) |
+| Architecture | Dual-task: high-priority protection task + `loop()` service path |
+| Wi-Fi | SoftAP only. No STA, no WiFiManager, no DDNS, no captive portal |
+| AP credentials | SSID `MPS-505`, password `mps50005`, IP `192.168.4.1` |
+| Web auth | Themed `/login` page + HttpOnly session cookie, default `mps` / `mps500`, stored in NVS |
+| ACS712 | ACS712-30A, 66 mV/A, all channels |
+| Divider | R1=10 kΩ, R2=15 kΩ, ratio 0.6 |
+| Relay default | Active-HIGH, OFF=LOW. De-energized on boot. Per-channel override in motor record |
+| Mains frequency | Per motor, 50 or 60 Hz (AC only) |
+| I²t model | Classic energy: `E += I_rms² × dt`, trip vs `(k×In)² × t_trip` |
+| Below pickup | Decay `E` toward 0 over that motor's cooling time |
+| Stall | Immediate on the next RMS window, independent of I²t |
+| Sensor fault | Trip immediately (`SENSOR_FAULT`). Auto-restart still applies |
+| Protection steps | Max 8 per motor |
+| Max motors / channels | 8 / 8 |
+| SD | Fault log only. Missing SD does not affect protection or dashboard |
+| Timebase | `millis()` since boot. No NTP (SoftAP has no upstream time) |
+
+## 3. Architecture
+
+Arduino `setup()`/`loop()` plus FreeRTOS.
+
+```
+                  +------------------+
+  ACS712 ADC  --> | Protection task  | --> Relays
+                  | (core 1, prio 5) |
+                  | RMS, I2t, stall, |
+                  | sensor fault     |
+                  +--------+---------+
+                           | command queue (fixed struct)
+                           | status snapshot (mutex)
+                  +--------v---------+
+  Browser <-----> | loop() + Async   | --> Buzzer (LEDC)
+  SoftAP          | web server       | --> SD log writes
+                  | (core 1, prio 1) |
+                  +------------------+
+         WiFi/tcpip on core 0
+```
+
+Rules:
+
+- The protection task never mounts SD, never formats strings for HTTP, and never blocks on Wi-Fi.
+- Relays are driven only from the protection task (and from `setup()` fail-safe OFF before tasks start).
+- Web handlers enqueue commands (`START`, `STOP`, `RESET`, `CALIBRATE`, motor CRUD already applied to NVS then `RELOAD`).
+- Live dashboard reads a mutex-guarded snapshot (`rms[8]`, `energy`, `status`, `uptime`, `fault_count`, `thermal_pct`, `sd_ok`, `free_heap`).
+
+### 3.1 File split
+
+Arduino IDE sketch folder `MotorProtection/`:
+
+| File | Responsibility |
+|---|---|
+| `MotorProtection.ino` | `setup()`/`loop()`, task spawn, boot Serial banner |
+| `config_pins.h` | Only file with GPIO numbers |
+| `config_limits.h` | `MAX_CHANNELS`, `MAX_MOTORS`, `MAX_STEPS`, string lengths |
+| `types.h` | Shared enums/structs (motor record, commands, status) |
+| `motor_store.h/.cpp` | NVS load/save of motor list + auth credentials |
+| `sensing.h/.cpp` | ADC, zero calibration, RMS / DC average |
+| `protection.h/.cpp` | I²t, stall, cooling, motor state machine |
+| `relays.h/.cpp` | Polarity-aware coil drive, boot fail-safe OFF |
+| `buzzer.h/.cpp` | Named non-blocking LEDC tunes |
+| `sd_log.h/.cpp` | Optional CSV log; safe no-op if unmounted |
+| `net_ap.h/.cpp` | SoftAP start, boot network print |
+| `web.h/.cpp` | ESPAsyncWebServer, session login, HTML/JSON |
+
+No GPIO literals outside `config_pins.h`.
+
+## 4. Hardware and pin map
+
+Module: ESP32-S3-N16R8. Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0).
+
+| Function | GPIO | Notes |
+|---|---|---|
+| I-sense CH0 | 1 | ADC1 |
+| I-sense CH1 | 2 | ADC1 |
+| I-sense CH2 | 4 | ADC1 |
+| I-sense CH3 | 5 | ADC1 |
+| I-sense CH4 | 6 | ADC1 |
+| I-sense CH5 | 7 | ADC1 |
+| I-sense CH6 | 8 | ADC1 |
+| I-sense CH7 | 9 | ADC1 |
+| Relay CH0 | 15 | Active-HIGH default |
+| Relay CH1 | 16 | |
+| Relay CH2 | 17 | |
+| Relay CH3 | 18 | |
+| Relay CH4 | 38 | |
+| Relay CH5 | 39 | |
+| Relay CH6 | 40 | |
+| Relay CH7 | 41 | |
+| SD MOSI | 11 | SPI, 3.3 V only |
+| SD MISO | 13 | |
+| SD SCK | 12 | |
+| SD CS | 10 | |
+| Buzzer | 21 | LEDC PWM, passive |
+
+Analog path:
+
+- ACS712-30A on 5 V, Vout = 2.5 V + 0.066 V/A × I
+- Divider 0.6 → Vadc ≈ 1.5 V + 0.0396 V/A × I
+- ESP32 ADC 12-bit, 11 dB attenuation (full-scale near 3.1–3.3 V)
+- Sensitivity used in firmware: `MV_PER_AMP = 66.0f * 0.6f` (39.6 mV/A) relative to the calibrated zero, not relative to theoretical 1.5 V
+- Zero-current ADC counts are measured at runtime per channel
+
+Relays:
+
+- `setup()` sets every relay pin OUTPUT LOW before Wi-Fi or tasks start
+- Energize = GPIO HIGH when polarity is active-HIGH; inverted when the motor record says active-LOW
+- MCU reset / boot: pins start LOW → coils de-energized for the default polarity
+
+## 5. Data model
+
+### 5.1 Motor record (NVS, not SD)
+
+Fixed-size struct, packed, versioned (`schema_version = 1`).
+
+```
+MotorRecord
+  uint8_t  used
+  char     name[24]
+  uint8_t  phase_count          // 1 or 3
+  uint8_t  channels[3]          // channel indices 0..7; unused = 0xFF
+  uint8_t  is_ac                // 1 = AC, 0 = DC
+  uint8_t  mains_hz             // 50 or 60; ignored if DC
+  float    in_amps              // operating current
+  float    stall_amps
+  float    cooling_s
+  uint8_t  auto_restart         // 0/1
+  uint8_t  relay_active_high[3] // 1 = active-HIGH (default)
+  uint8_t  step_count           // 1..8
+  float    step_k[8]            // multiplier of In
+  float    step_t_s[8]          // trip time at that multiple
+```
+
+NVS namespace `mps`. Keys:
+
+- `motors` — blob of `MotorRecord[MAX_MOTORS]`
+- `auth_user`, `auth_pass` — dashboard login credentials
+- `magic` — schema marker
+
+Corrupt or missing blob → empty motor list, Serial warning, do not invent motors. Protection and web still run.
+
+### 5.2 Runtime (RAM only)
+
+Per channel: `zero_adc`, `last_rms`, `energy_a2s` (I²t accumulator), last sample ticks.
+
+Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type.
+
+Dashboard thermal % for a motor is the max of its channels' `100 * E / E_trip`. For 3-phase that is the hottest phase.
+
+Statuses: `Stopped`, `Running`, `Fault`, `Cooling`.
+
+Dashboard is one row per motor, never per channel. A 3-phase motor is one record occupying three linked channels. Energy is **per channel**; a trip on any assigned channel de-energizes the whole motor.
+
+### 5.3 Channel allocation
+
+Add-motor asks phase count first. Firmware allocates 1 or 3 currently free channels (lowest indices). If not enough free channels, the API returns an error and the UI shows it. Channels are released on delete.
+
+Delete is allowed only from `Stopped` or `Fault`, never from `Running` or `Cooling`.
+
+## 6. I²t and protection logic
+
+### 6.1 Sampling
+
+- AC: at least 32 samples spanning at least one full cycle (20 ms at 50 Hz, 16.67 ms at 60 Hz). True RMS: `sqrt(mean(i²))`. Never a single instantaneous read.
+- DC: mean of |i| over a 20 ms window (same function, no RMS).
+- 3-phase: all three channels sampled in one pass; any phase may trip the group.
+- Motors are scanned round-robin. Worst-case stall detect latency is `N_running × window` (documented; acceptable vs thermal timescales).
+- Current: `i = (vadc - vzero) / 0.0396` amperes.
+
+Calibration:
+
+- All 8 channels at boot (motors are still Stopped, relays OFF).
+- On-demand from the UI only if every motor is `Stopped` or `Fault`. Otherwise reject.
+- Each channel: N samples with no current expected; store mean ADC as `zero_adc`.
+
+### 6.2 Energy model
+
+While `Running` and `I_rms >= k_min × In` (lowest step multiplier):
+
+- `E += I_rms² × dt`  (A²s)
+- Active step = highest k such that `I_rms >= k × In`
+- Trip `I2T` when `E >= (k × In)² × t_trip` of that active step
+
+While `Running` and `I_rms < k_min × In`:
+
+- Decay: `E = max(0, E * (1 - dt / cooling_s))`
+
+`E` is also zeroed on Stop, on Reset, and when leaving Cooling into Stopped.
+
+Thermal load % (dashboard): `0` below pickup; otherwise `100 * E / E_trip` of the active step, clamped 0–100+.
+
+### 6.3 Stall
+
+If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately. No I²t involvement.
+
+### 6.4 Sensor fault
+
+Trip `SENSOR_FAULT` immediately if, on an assigned channel:
+
+- ADC reading is stuck (unchanged across a full window within 1 LSB) while the motor is Running, or
+- Mean Vadc is outside `[0.05 V, 3.05 V]` (open/shorted divider), or
+- Computed |I_rms| is physically implausible (> 40 A on a 30 A sensor)
+
+Same trip path as other faults (relays off, tone, log, cooling). Auto-restart still applies.
+
+### 6.5 State machine
+
+```
+Stopped --Start--> Running
+Running --Stop---> Stopped
+Running --trip---> Cooling     (relays OFF, fault tune, SD log)
+Cooling --timer, auto_restart=1--> Running
+Cooling --timer, auto_restart=0--> Fault
+Cooling --Reset--> Stopped     (cancel auto-restart, buzzer off)
+Fault   --Reset--> Stopped     (buzzer off)
+```
+
+Start is rejected from Fault, Cooling, or if channels are not calibrated.
+
+On trip, 3-phase de-energizes all three relays together.
+
+### 6.6 Fail-safe summary
+
+- Boot: all relays OFF before any other init
+- Protection must not depend on SD
+- NVS failure: no motors, not a crash
+- Sensor death: trip, do not keep the coil energized
+- Web auth required on every route including JSON
+
+## 7. Connectivity and web UI
+
+SoftAP only: `WiFi.softAP("MPS-505", "mps50005")`, IP `192.168.4.1`. No STA, no WiFiManager, no DDNS. WPA2 password is ≥ 8 characters.
+
+Boot Serial always prints:
+
+- Mode: SoftAP
+- SSID, password, IP
+- Dashboard user/password (from NVS, default `mps` / `mps500`)
+
+Themed `/login` page (same dark dashboard theme). Successful POST sets an HttpOnly `mps_sess` cookie (8 h). Every other route requires a valid session; unauthenticated HTML redirects to `/login`, JSON returns 401. Credentials changeable on the Security page (session is cleared). `/logout` clears the cookie.
+
+Desktop-only UI (wide table layout, not mobile-first). Four operator pages plus Security, same dashboard for any client on the AP:
+
+1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), thermal load % (hottest phase), Start/Stop, Reset (enabled in Fault or Cooling). Poll `GET /api/status` about once per second.
+2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip).
+3. Edit / delete — same fields as add.
+4. Log — table or an "unavailable" banner if `sd_ok == false`. Export CSV, clear.
+5. Security — change dashboard username/password.
+
+Implementation notes:
+
+- ESPAsyncWebServer, not a synchronous `WebServer`
+- No heavy Arduino `String` concatenation in handlers; prefer `snprintf` into fixed buffers or PROGMEM HTML
+- Log free heap after each request and each protection cycle
+
+## 8. Buzzer
+
+GPIO 21, LEDC, non-blocking. Protection queues a tone id; `loop()` advances the sequencer.
+
+| Function | Pattern |
+|---|---|
+| `tonePowerUp()` | Three ascending beeps |
+| `toneFault()` | Repeating 1 kHz / silence until Reset or Stop |
+| `toneMotorAdded()` | Two short mid beeps |
+| `toneMotorStarted()` | One rising chirp |
+| `toneMotorStopped()` | One falling chirp |
+| `toneClick()` | 20 ms tick |
+
+## 9. SD logging
+
+SPI (not SDIO), CS GPIO 10. RoboticsBD 3.3 V breakout, no CD pin. Presence = successful `SD.begin()`.
+
+Mount failure: set `sd_ok = false`, Serial warning, never touch `File` objects, skip writes. Dashboard and protection continue.
+
+Log file `/faults.csv`. Header: `uptime_ms,motor,type,current_A`
+
+Types: `I2T`, `STALL`, `SENSOR_FAULT`.
+
+3-phase current-at-fault is the RMS of the phase that crossed the threshold.
+
+Clear log from UI truncates the file. Export is a download of the same CSV.
+
+No motor configuration is ever stored on SD.
+
+## 10. Heap safety
+
+- Fixed-size motor array, fixed command queue, reserved print buffers
+- No `String +=` in the protection path or in request handlers
+- SD failure must not leave a half-init filesystem object; `sd_ok` gates every call
+- Enable heap poisoning for development (Arduino IDE Core Debug Level = Debug, and `CONFIG_HEAP_POISONING_COMPREHENSIVE` if a custom sdkconfig is used)
+- Serial log of `ESP.getFreeHeap()` after each web request and each protection cycle
+
+## 11. Libraries (assumed; Arduino IDE Library Manager)
+
+These were not named by the user; they are the natural Arduino-IDE match for the locked architecture:
+
+- Arduino-ESP32 3.x board package, board = "ESP32S3 Dev Module", PSRAM = "OPI PSRAM", Flash = 16 MB
+- `ESPAsyncWebServer` + `AsyncTCP` (ESP32Async / compatible Arduino-ESP32 3.x build)
+- Built-in: `WiFi`, `Preferences` (NVS), `SD`, `SPI`, `FS`, `esp32-hal-ledc`
+
+If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32Async fork without changing the HTTP API.
+
+## 12. Error handling
+
+| Failure | Behaviour |
+|---|---|
+| SD missing/unformatted | Boot, protect, serve UI; log page = unavailable |
+| NVS corrupt | Empty motor list; Serial warning |
+| Sensor fault | Trip that motor |
+| Auth missing/wrong | HTTP 401, no motor commands |
+| Insufficient free channels | Add-motor rejected |
+| Calibrate while a motor runs | Rejected |
+| Delete while Running/Cooling | Rejected |
+
+## 13. Testing (firmware-level, no hardware lab in this repo)
+
+- State-machine unit-style tests on host are out of scope for Arduino IDE; keep functions pure enough to reason about (`energy_update()`, `active_step()`, `should_trip()`).
+- Serial boot banner checklist
+- SoftAP join + `/login` then dashboard 200; unauthenticated `/api` returns 401
+- Simulated RMS via a test hook compiling only if `MPS_TEST_HOOKS` is defined (optional, later)
+
+## 14. Out of scope
+
+- Station-mode Wi-Fi, WiFiManager, DDNS, NTP, cloud relay
+- Mobile-responsive UI
+- Cellular
+- Hardware schematic / PCB
+- Git commit (user will request it)
+
+## 15. Assumptions vs escalated questions
+
+See `AGENTS.md` section "Open questions and assumptions". Nothing safety-relevant in this spec was guessed after the review: relay polarity, trip math, sensor-fault behaviour, and auth were all confirmed.
