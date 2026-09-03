@@ -18,6 +18,8 @@ Hardware is treated as already wired. This repo is firmware only.
 
 Design spec: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md`
 
+License: MIT (`LICENSE`). Project overview: `README.md`. User-facing guide: `docs/USER_MANUAL.md`.
+
 ## Hardware / pin table
 
 Board: **ESP32-S3-N16R8** (16 MB flash, 8 MB octal PSRAM). Arduino IDE: "ESP32S3 Dev Module", Flash 16 MB, PSRAM OPI.
