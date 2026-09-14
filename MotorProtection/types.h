@@ -76,6 +76,8 @@ struct LogEvent {
   FaultType type;
   float    current_a;
   float    voltage_v;
+  float    power;
+  uint8_t  power_is_w;
 };
 
 struct ChannelRuntime {
@@ -96,6 +98,9 @@ struct MotorRuntime {
   uint32_t    fault_count;
   FaultType   last_fault;
   float       thermal_pct;
+  float       power;
+  float       energy;
+  uint8_t     power_is_w;
 };
 
 struct StatusSnapshot {

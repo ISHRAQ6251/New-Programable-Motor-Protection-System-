@@ -9,6 +9,17 @@
 #include "motor_store.h"
 #include "config_pins.h"
 
+struct SampleJob {
+  uint8_t used;
+  uint8_t mi;
+  uint8_t phase_count;
+  uint8_t is_ac;
+  uint8_t mains_hz;
+  uint8_t channels[MAX_PHASES];
+  SampleResult res[MAX_PHASES];
+  VoltageSample vres[MAX_PHASES];
+};
+
 static MotorRecord s_motors[MAX_MOTORS];
 static MotorRuntime s_rt[MAX_MOTORS];
 static ChannelRuntime s_ch[MAX_CHANNELS];
@@ -23,12 +34,15 @@ static void setTone(ToneId id) {
   s_tone = id;
 }
 
-static void pushLog(int mi, FaultType ft, float current_a, float voltage_v) {
+static void pushLog(int mi, FaultType ft, float current_a, float voltage_v,
+                    float power, uint8_t power_is_w) {
   LogEvent ev;
   ev.uptime_ms = millis();
   ev.type = ft;
   ev.current_a = current_a;
   ev.voltage_v = voltage_v;
+  ev.power = power;
+  ev.power_is_w = power_is_w;
   strncpy(ev.motor, s_motors[mi].name, NAME_LEN - 1);
   ev.motor[NAME_LEN - 1] = 0;
   if (s_log_q) {
@@ -81,16 +95,20 @@ static void zeroEnergy(int mi) {
     }
   }
   s_rt[mi].thermal_pct = 0;
+  s_rt[mi].power = 0;
+  s_rt[mi].energy = 0;
 }
 
 static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
+  const float window_power = s_rt[mi].power;
+  const uint8_t window_is_w = s_rt[mi].power_is_w;
   motorRelaysOff(mi);
   s_rt[mi].status = MST_COOLING;
   s_rt[mi].last_fault = ft;
   s_rt[mi].fault_count++;
   s_rt[mi].cooling_deadline_ms = millis() + (uint32_t)(s_motors[mi].cooling_s * 1000.0f);
   zeroEnergy(mi);
-  pushLog(mi, ft, current_a, voltage_v);
+  pushLog(mi, ft, current_a, voltage_v, window_power, window_is_w);
   setTone(TONE_FAULT);
 }
 
@@ -278,6 +296,44 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
   }
 }
 
+static void computePower(int mi, const SampleJob &job, float dt) {
+  const MotorRecord *m = &s_motors[mi];
+  MotorRuntime *rt = &s_rt[mi];
+  if (m->is_ac) {
+    float sum_i = 0;
+    for (int p = 0; p < job.phase_count; p++) {
+      sum_i += job.res[p].rms;
+    }
+    if (sum_i < 0.0f) {
+      sum_i = 0.0f;
+    }
+    float s_va;
+    if (m->phase_count >= 3) {
+      s_va = (m->rated_ac_v / 1.7320508f) * sum_i;
+    } else {
+      s_va = m->rated_ac_v * sum_i;
+    }
+    if (s_va < 0.0f) {
+      s_va = 0.0f;
+    }
+    rt->power = s_va;
+    rt->power_is_w = 0;
+    rt->energy += s_va * dt / 3600.0f;
+  } else {
+    float p = 0.0f;
+    for (int ch = 0; ch < job.phase_count; ch++) {
+      const float v = job.vres[ch].present ? job.vres[ch].v_bus : 0.0f;
+      p += v * job.res[ch].rms;
+    }
+    if (p < 0.0f) {
+      p = 0.0f;
+    }
+    rt->power = p;
+    rt->power_is_w = 1;
+    rt->energy += p * dt / 3600.0f;
+  }
+}
+
 static void processMotorCooling(int mi, uint32_t now) {
   MotorRecord *m = &s_motors[mi];
   MotorRuntime *rt = &s_rt[mi];
@@ -354,16 +410,7 @@ void protectionTask(void *arg) {
     }
     last = now;
 
-    struct SampleJob {
-      uint8_t used;
-      uint8_t mi;
-      uint8_t phase_count;
-      uint8_t is_ac;
-      uint8_t mains_hz;
-      uint8_t channels[MAX_PHASES];
-      SampleResult res[MAX_PHASES];
-      VoltageSample vres[MAX_PHASES];
-    } jobs[MAX_MOTORS];
+    SampleJob jobs[MAX_MOTORS];
     memset(jobs, 0, sizeof(jobs));
     int nj = 0;
 
@@ -411,6 +458,9 @@ void protectionTask(void *arg) {
       }
       if (s_rt[i].status != MST_RUNNING) {
         s_rt[i].thermal_pct = 0;
+        s_rt[i].power = 0;
+        s_rt[i].energy = 0;
+        s_rt[i].power_is_w = s_motors[i].is_ac ? 0 : 1;
         continue;
       }
       SampleJob *job = nullptr;
@@ -431,6 +481,7 @@ void protectionTask(void *arg) {
         const VoltageSample *vs = job->is_ac ? nullptr : &job->vres[p];
         applySample(i, p, job->res[p], vs, now, dt, &hottest, &trip_ft, &trip_i, &trip_v);
       }
+      computePower(i, *job, dt);
       s_rt[i].thermal_pct = hottest;
       if (trip_ft != FT_NONE) {
         trip(i, trip_ft, trip_i, trip_v);

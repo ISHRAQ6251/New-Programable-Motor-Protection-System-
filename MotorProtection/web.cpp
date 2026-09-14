@@ -13,7 +13,7 @@
 #include "config_limits.h"
 
 static AsyncWebServer s_server(80);
-static char s_json[16384];
+static char s_json[20480];
 static SemaphoreHandle_t s_json_mu;
 static char s_sess[33];
 static uint32_t s_sess_exp_ms;
@@ -305,6 +305,12 @@ static void handleStatus(AsyncWebServerRequest *req) {
         vcal = 0;
       }
     }
+    char pwr[16];
+    if (m->is_ac) {
+      snprintf(pwr, sizeof(pwr), "%.0f", (double)snap.rt[i].power);
+    } else {
+      snprintf(pwr, sizeof(pwr), "%.1f", (double)snap.rt[i].power);
+    }
     char stepbuf[384];
     char *sw = stepbuf;
     *sw++ = '[';
@@ -321,12 +327,14 @@ static void handleStatus(AsyncWebServerRequest *req) {
                  "{\"idx\":%d,\"used\":1,\"name\":\"%s\",\"status\":%u,\"status_s\":\"%s\","
                  "\"uptime_ms\":%u,\"fault_count\":%u,\"last_fault\":\"%s\",\"channels\":[%s],"
                  "\"phases\":%u,\"rms\":[%s],\"volts\":[%s],\"thermal_pct\":%.1f,"
+                 "\"power\":%s,\"power_unit\":\"%s\",\"energy\":%.2f,"
                  "\"in\":%.4f,\"stall\":%.4f,\"cool\":%.3f,\"ac\":%u,\"hz\":%u,"
                  "\"vac\":%.3f,\"uv\":%.3f,\"ov\":%.3f,\"auto\":%u,\"pol\":%u,\"vcal\":%u,\"steps\":%s}",
                  i, m->name, (unsigned)snap.rt[i].status, stName(snap.rt[i].status),
                  (unsigned)snap.rt[i].run_start_ms, (unsigned)snap.rt[i].fault_count,
                  ftName(snap.rt[i].last_fault), chbuf, (unsigned)m->phase_count,
                  rmsbuf, vbuf, (double)snap.thermal_pct[i],
+                 pwr, m->is_ac ? "VA" : "W", (double)snap.rt[i].energy,
                  (double)m->in_amps, (double)m->stall_amps, (double)m->cooling_s,
                  (unsigned)m->is_ac, (unsigned)m->mains_hz,
                  (double)m->rated_ac_v, (double)m->uv_volts, (double)m->ov_volts,
@@ -514,12 +522,22 @@ static void handleLog(AsyncWebServerRequest *req) {
       line = strtok_r(nullptr, "\n", &save);
       continue;
     }
-    char up[24] = {0};
-    char mot[NAME_LEN] = {0};
-    char typ[24] = {0};
-    char cur[24] = {0};
-    char volt[24] = {0};
-    sscanf(line, "%23[^,],%23[^,],%23[^,],%23[^,],%23s", up, mot, typ, cur, volt);
+    char fields[7][24];
+    for (int fi = 0; fi < 7; fi++) {
+      fields[fi][0] = 0;
+    }
+    {
+      char *fp = line;
+      for (int fi = 0; fi < 7 && fp; fi++) {
+        char *comma = strchr(fp, ',');
+        if (comma) {
+          *comma = 0;
+        }
+        strncpy(fields[fi], fp, sizeof(fields[fi]) - 1);
+        fields[fi][sizeof(fields[fi]) - 1] = 0;
+        fp = comma ? comma + 1 : nullptr;
+      }
+    }
     if (!first) {
       if (w + 2 < end) {
         *w++ = ',';
@@ -527,8 +545,9 @@ static void handleLog(AsyncWebServerRequest *req) {
     }
     first = false;
     k = snprintf(w, end - w,
-                 "{\"uptime_ms\":\"%s\",\"motor\":\"%s\",\"type\":\"%s\",\"current_A\":\"%s\",\"voltage_V\":\"%s\"}",
-                 up, mot, typ, cur, volt);
+                 "{\"uptime_ms\":\"%s\",\"motor\":\"%s\",\"type\":\"%s\",\"current_A\":\"%s\","
+                 "\"voltage_V\":\"%s\",\"power_W\":\"%s\",\"power_VA\":\"%s\"}",
+                 fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]);
     if (k < 0 || w + k >= end) {
       break;
     }

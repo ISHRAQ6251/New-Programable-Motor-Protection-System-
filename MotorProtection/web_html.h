@@ -93,7 +93,7 @@ input:disabled,select:disabled{opacity:.45}
     <table id="dash-tbl" hidden>
       <thead><tr>
         <th>Ch</th><th>Name</th><th>Status</th><th>Uptime</th><th>Faults</th>
-        <th>RMS (A)</th><th>Voltage (V)</th><th>Thermal</th><th></th>
+        <th>RMS (A)</th><th>Voltage (V)</th><th>Power</th><th>Thermal</th><th></th>
       </tr></thead>
       <tbody id="dash-body"></tbody>
     </table>
@@ -184,7 +184,7 @@ input:disabled,select:disabled{opacity:.45}
     <div id="log-unavail" class="banner" hidden>Fault log unavailable — no SD card. Protection and dashboard still run.</div>
     <div id="log-wrap">
       <table>
-        <thead><tr><th>Uptime (ms)</th><th>Motor</th><th>Type</th><th>Current (A)</th><th>Voltage (V)</th></tr></thead>
+        <thead><tr><th>Uptime (ms)</th><th>Motor</th><th>Type</th><th>Current (A)</th><th>Voltage (V)</th><th>Power (W)</th><th>Power (VA)</th></tr></thead>
         <tbody id="log-body"></tbody>
       </table>
       <p class="form-actions" style="margin-top:16px">
@@ -238,6 +238,13 @@ function voltCell(m){
   if(m.ac) return "—";
   return (m.volts||[]).map(v=>Number(v).toFixed(1)).join(" / ");
 }
+function powerCell(m){
+  const unit=m.power_unit||(m.ac?"VA":"W");
+  const p=Number(m.power)||0;
+  const pv=unit==="VA"?("~ "+p.toFixed(0)):p.toFixed(1);
+  const e=Number(m.energy)||0;
+  return "<span class='mono'>"+pv+" "+unit+"</span><div class='dash-field'>"+e.toFixed(2)+" "+(unit==="VA"?"VAh":"Wh")+" since boot</div>";
+}
 function thBar(pct){
   pct=Math.max(0,Number(pct)||0);
   const cls=pct>=90?"hot":pct>=60?"warn":"";
@@ -270,7 +277,7 @@ function renderDash(){
       "<div class='dash-field'>"+(m.ac?("AC "+Number(m.vac||0).toFixed(0)+" V "+(m.hz||"")+" Hz"):"DC")+"</div></td>"+
       "<td><span class='badge s-"+st+"'>"+st+"</span>"+fault+"</td>"+
       "<td>"+fmtU(m.uptime_ms)+"</td><td>"+m.fault_count+"</td>"+
-      "<td class='mono'>"+rmsCell(m)+"</td><td class='mono'>"+voltCell(m)+"</td><td>"+thBar(m.thermal_pct)+"</td>"+
+      "<td class='mono'>"+rmsCell(m)+"</td><td class='mono'>"+voltCell(m)+"</td><td>"+powerCell(m)+"</td><td>"+thBar(m.thermal_pct)+"</td>"+
       "<td class='row-actions'>"+
       "<button class='btn-ok' data-a='start' data-i='"+m.idx+"' "+(canStart?"":"disabled")+startWhy+">Start</button>"+
       "<button data-a='stop' data-i='"+m.idx+"' "+(canStop?"":"disabled")+">Stop</button>"+
@@ -409,11 +416,11 @@ function loadLog(){
     const tb=$("log-body");tb.innerHTML="";
     (j.rows||[]).forEach(row=>{
       const tr=document.createElement("tr");
-      tr.innerHTML="<td>"+esc(row.uptime_ms)+"</td><td>"+esc(row.motor)+"</td><td>"+esc(row.type)+"</td><td>"+esc(row.current_A)+"</td><td>"+esc(row.voltage_V||"")+"</td>";
+      tr.innerHTML="<td>"+esc(row.uptime_ms)+"</td><td>"+esc(row.motor)+"</td><td>"+esc(row.type)+"</td><td>"+esc(row.current_A)+"</td><td>"+esc(row.voltage_V||"")+"</td><td>"+esc(row.power_W||"")+"</td><td>"+esc(row.power_VA||"")+"</td>";
       tb.appendChild(tr);
     });
     if(!(j.rows||[]).length && j.sd_ok){
-      tb.innerHTML="<tr><td colspan='5' class='empty'>No fault entries.</td></tr>";
+      tb.innerHTML="<tr><td colspan='7' class='empty'>No fault entries.</td></tr>";
     }
   });
 }

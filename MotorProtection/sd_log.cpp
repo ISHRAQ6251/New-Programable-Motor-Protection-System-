@@ -31,7 +31,7 @@ void sdLogBegin() {
       Serial.println("SD: cannot create faults.csv");
       return;
     }
-    f.println("uptime_ms,motor,type,current_A,voltage_V");
+    f.println("uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA");
     f.close();
   }
   s_ok = true;
@@ -52,13 +52,24 @@ void sdLogAppend(const LogEvent *ev) {
     s_ok = false;
     return;
   }
-  char line[128];
-  snprintf(line, sizeof(line), "%lu,%s,%s,%.3f,%.3f",
+  char pwr_w[16];
+  char pwr_va[16];
+  pwr_w[0] = 0;
+  pwr_va[0] = 0;
+  if (ev->power_is_w) {
+    snprintf(pwr_w, sizeof(pwr_w), "%.1f", (double)ev->power);
+  } else {
+    snprintf(pwr_va, sizeof(pwr_va), "%.0f", (double)ev->power);
+  }
+  char line[160];
+  snprintf(line, sizeof(line), "%lu,%s,%s,%.3f,%.3f,%s,%s",
            (unsigned long)ev->uptime_ms,
            ev->motor,
            faultName(ev->type),
            (double)ev->current_a,
-           (double)ev->voltage_v);
+           (double)ev->voltage_v,
+           pwr_w,
+           pwr_va);
   f.println(line);
   f.close();
 }
@@ -73,7 +84,7 @@ bool sdLogClear() {
     s_ok = false;
     return false;
   }
-  f.println("uptime_ms,motor,type,current_A,voltage_V");
+  f.println("uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA");
   f.close();
   return true;
 }
