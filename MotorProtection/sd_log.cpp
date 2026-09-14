@@ -9,10 +9,12 @@ static bool s_ok = false;
 
 static const char *faultName(FaultType t) {
   switch (t) {
-    case FT_I2T:    return "I2T";
-    case FT_STALL:  return "STALL";
-    case FT_SENSOR: return "SENSOR_FAULT";
-    default:        return "UNKNOWN";
+    case FT_I2T:       return "I2T";
+    case FT_STALL:     return "STALL";
+    case FT_SENSOR:    return "SENSOR_FAULT";
+    case FT_UNDERVOLT: return "UNDERVOLT";
+    case FT_OVERVOLT:  return "OVERVOLT";
+    default:           return "UNKNOWN";
   }
 }
 
@@ -29,7 +31,7 @@ void sdLogBegin() {
       Serial.println("SD: cannot create faults.csv");
       return;
     }
-    f.println("uptime_ms,motor,type,current_A");
+    f.println("uptime_ms,motor,type,current_A,voltage_V");
     f.close();
   }
   s_ok = true;
@@ -50,12 +52,13 @@ void sdLogAppend(const LogEvent *ev) {
     s_ok = false;
     return;
   }
-  char line[96];
-  snprintf(line, sizeof(line), "%lu,%s,%s,%.3f",
+  char line[128];
+  snprintf(line, sizeof(line), "%lu,%s,%s,%.3f,%.3f",
            (unsigned long)ev->uptime_ms,
            ev->motor,
            faultName(ev->type),
-           (double)ev->current_a);
+           (double)ev->current_a,
+           (double)ev->voltage_v);
   f.println(line);
   f.close();
 }
@@ -70,7 +73,7 @@ bool sdLogClear() {
     s_ok = false;
     return false;
   }
-  f.println("uptime_ms,motor,type,current_A");
+  f.println("uptime_ms,motor,type,current_A,voltage_V");
   f.close();
   return true;
 }

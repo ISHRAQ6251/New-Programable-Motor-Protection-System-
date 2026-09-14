@@ -12,6 +12,8 @@
  * Libraries (Library Manager):
  *   ESPAsyncWebServer  (ESP32Async)
  *   AsyncTCP           (ESP32Async)
+ *   Adafruit ADS1X15
+ *   Adafruit BusIO     (dependency of ADS1X15)
  *
  * SoftAP: MPS-505 / mps50005   dashboard: http://192.168.4.1
  * Default dashboard login: mps / mps500  (themed /login page, session cookie)
@@ -23,6 +25,7 @@
 #include "relays.h"
 #include "buzzer.h"
 #include "sensing.h"
+#include "voltage.h"
 #include "motor_store.h"
 #include "protection.h"
 #include "sd_log.h"
@@ -36,6 +39,7 @@ void setup() {
   relaysBegin();
   buzzerBegin();
   sensingBegin();
+  voltageBegin();
   motorStoreBegin();
   {
     MotorRecord motors[MAX_MOTORS];

@@ -8,7 +8,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 
 ## 1. What the system does
 
-- Up to **8 protection channels**. Each channel is one ACS712-30A current sensor plus one relay.
+- Up to **8 protection channels**. Each channel is one ACS712-30A current sensor, one relay, and one DC voltage tap (ADS1115).
 - A **single-phase** motor uses 1 channel. A **three-phase** motor uses 3 linked channels: a fault on any phase opens all three relays, and the dashboard shows one row, not three.
 - Classic **I²t energy** trip curve, plus a faster independent **stall** trip and a **sensor-fault** trip.
 - Motor settings live in on-chip flash (NVS). They survive power cycles even if the SD card is missing.
@@ -31,6 +31,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 | Relays | Logic-level modules, default active-HIGH (GPIO HIGH = coil on) |
 | SD | RoboticsBD 3.3 V Micro SD breakout, SPI, no onboard regulator |
 | Buzzer | 1x passive (PWM) |
+| DC voltage | 2× ADS1115 (I²C), 180 k / 10 k divider per channel |
 
 Power the ESP32 from USB or a 5 V supply that shares ground with the ACS712 boards and relay modules. The SD breakout is **3.3 V only** — do not feed it 5 V.
 
@@ -73,6 +74,8 @@ All GPIO numbers exist only in `MotorProtection/config_pins.h`. Changing a pin m
 | SD SCK | 12 | SPI | |
 | SD CS | 10 | SPI chip select | |
 | Buzzer | 21 | PWM (LEDC) | Passive buzzer |
+| I²C SDA | 14 | I²C | ADS1115 — not ESP32 default GPIO 8 |
+| I²C SCL | 42 | I²C | ADS1115 — not ESP32 default GPIO 9 |
 | USB / Serial | 19, 20, 43, 44 | reserved | Do not reassign |
 
 ### 2.4 Analog front-end (every current channel)
@@ -118,20 +121,55 @@ I (A) = (Vadc_mV - zero_mV) / 39.6
                                        |           |
                      +5 V -- relay VCC-+           |
                     GND  -- relay GND--+           |
-                                       | GPIO 21 -- passive buzzer -- GND
-                                       | GPIO 11 -- SD MOSI
-                                       | GPIO 13 -- SD MISO
-                                       | GPIO 12 -- SD SCK
-                                       | GPIO 10 -- SD CS
-                                       | 3.3 V  -- SD VCC   (NOT 5 V)
-                                       +----------- SD GND
+                                        | GPIO 21 -- passive buzzer -- GND
+                                        | GPIO 14 -- I2C SDA -- ADS1115 SDA (both chips)
+                                        | GPIO 42 -- I2C SCL -- ADS1115 SCL
+                                        | GPIO 11 -- SD MOSI
+                                        | GPIO 13 -- SD MISO
+                                        | GPIO 12 -- SD SCK
+                                        | GPIO 10 -- SD CS
+                                        | 3.3 V  -- SD VCC / ADS1115 VDD  (NOT 5 V)
+                                        +----------- SD GND / ADS GND
 ```
 
 Relay modules typically need **5 V** for the coil supply and a **3.3 V-tolerant** IN pin. Confirm your module datasheet. Default firmware polarity: IN HIGH = motor power ON. Per-motor polarity can be inverted in the Add/Edit form if the module is active-LOW.
 
 **Fail-safe:** `setup()` drives every relay pin LOW before Wi-Fi starts. With the default active-HIGH wiring, motors stay off across reset.
 
-### 2.6 Three-phase motors
+### 2.6 DC voltage sensing (ADS1115)
+
+ESP32 ADC1 is fully used by current sensing. DC voltage uses two ADS1115 16-bit ADCs on I²C:
+
+| Module | ADDR pin | I²C address | Channels |
+|---|---|---|---|
+| ADS #1 | GND | 0x48 | CH0–CH3 → AIN0–AIN3 |
+| ADS #2 | VDD | 0x49 | CH4–CH7 → AIN0–AIN3 |
+
+Firmware calls `Wire.begin(14, 42)` before and after `ads.begin()` because Adafruit BusIO's `begin()` would otherwise snap Wire back to GPIO 8/9 (current-sense CH6/CH7). Gain is set to **GAIN_ONE** (±4.096 V), not the library default. Both ADS1115 modules share that bus; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them.
+
+Each voltage divider taps the **motor terminal downstream of that channel's relay**, not the shared DC bus:
+
+```
+Motor terminal (after relay) -- 180 kOhm --+-- ADS1115 AINx
+                                           |
+                                         10 kOhm
+                                           |
+                                          GND
+```
+
+- Scale = (180k + 10k) / 10k = **19**
+- 0–50 V → about **0–2.63 V** at the ADS input
+- Firmware **calibrates** the AIN zero with the relay open (tap sits at 0 V). Do not assume 0.000 V.
+
+Conversion:
+
+```
+V_bus (V) = (V_adc - v_zero) × 19
+```
+
+There is **no AC voltage sensor**. For AC motors, enter a static **Rated AC voltage** on Add/Edit. It is stored in NVS and shown as configuration, not as live telemetry, and is not used for trips.
+
+### 2.7 Three-phase motors
 
 Wire phases A, B, C to three consecutive free channels (the firmware allocates the lowest free indices, e.g. CH0/CH1/CH2). The motor supply for all three phases should pass through the three relays so that a trip on any phase de-energizes the whole motor.
 
@@ -162,6 +200,8 @@ Open the sketch folder `MotorProtection/` (the `.ino` plus the `.cpp` / `.h` fil
 |---|---|---|
 | **ESPAsyncWebServer** | ESP32Async | Yes |
 | **AsyncTCP** | ESP32Async | Yes (dependency of the server) |
+| **Adafruit ADS1X15** | Adafruit | Yes (DC voltage) |
+| **Adafruit BusIO** | Adafruit | Yes (dependency of ADS1X15) |
 
 Built in with the ESP32 core (do not install separately):
 
@@ -171,6 +211,7 @@ Built in with the ESP32 core (do not install separately):
 | Preferences | NVS motor list and login |
 | SD, SPI, FS | Optional fault CSV |
 | LEDC (esp32-hal-ledc) | Buzzer PWM |
+| Wire | I²C for ADS1115 (pins 14 / 42) |
 
 If compile fails on Arduino-ESP32 3.x, use the maintained **ESP32Async** forks of both libraries, not the older me-no-dev copies.
 
@@ -192,6 +233,8 @@ On every reset the firmware prints something like:
 
 ```
 NVS: no motor blob — starting empty
+ADS1115 0x48: ok GAIN_ONE 250SPS
+ADS1115 0x49: not found
 SD: mount failed — fault log unavailable
 ---- MPS-505 boot ----
 mode: SoftAP
@@ -204,7 +247,7 @@ dash pass: mps500
 heap boot=...
 ```
 
-`SD: mount failed` is normal if no card is inserted. Protection still runs.
+`SD: mount failed` is normal if no card is inserted. Protection still runs. `ADS1115 0x48/0x49: not found` is normal if that chip is unpopulated; DC motors on those channels cannot Start.
 
 ### 4.2 Join the access point
 
@@ -232,7 +275,7 @@ Desktop layout only (wide tables). Pages:
 
 | Page | Purpose |
 |---|---|
-| Dashboard | One row per motor: channels, name, status, uptime, fault count, live RMS, thermal %, Start / Stop / Reset |
+| Dashboard | One row per motor: channels, name, status, uptime, fault count, live RMS, live DC V (em dash for AC), thermal %, Start / Stop / Reset |
 | Add motor | Wizard: phase count first, then name and protection settings |
 | Edit | Change settings or delete (delete only from Stopped or Fault) |
 | Log | Fault CSV. Banner if no SD. Export / Clear when a card is mounted |
@@ -256,7 +299,9 @@ Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silen
 1. Choose **1** or **3** phases. The UI shows which channels will be allocated (lowest free indices). If not enough channels are free, add is rejected.
 2. **Name** — letters, digits, space, `_ - .` only.
 3. **Operating current In (A)** — the motor's rated current. Trip steps are multiples of this.
-4. **Supply** — AC or DC. For AC, pick **50 Hz** or **60 Hz** (sets the RMS window).
+4. **Supply** — AC or DC.
+   - AC: pick **50 Hz** or **60 Hz** (RMS window) and **Rated AC voltage** (nameplate only; not sensed, not a trip).
+   - DC: optional **Undervoltage** and **Overvoltage** in volts. **0 disables** that trip. If both are set, OV must be greater than UV. Live V is the terminal downstream of the relay.
 5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window.
 6. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
 7. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off).
@@ -278,21 +323,21 @@ Stall might be set to 45 A so a locked rotor trips on the next ~20 ms window, wi
 
 ### 5.3 Start, stop, reset, calibrate
 
-- **Start** — only from Stopped, and only after zero-current calibration (done automatically at boot).
-- **Stop** — opens the relay(s), zeros thermal energy.
+- **Start** — only from Stopped, and only after zero calibration (done automatically at boot). DC Start also needs the ADS1115 for that motor's channels.
+- **Stop** — opens the relay(s), zeros thermal energy and live readings.
 - **Reset** — from Fault or Cooling, same as Stop plus silence buzzer.
-- **Calibrate zero-current** — re-measures ADC zeros on all 8 channels. Allowed only when every motor is Stopped or Fault (no live current expected). Relays stay off.
+- **Calibrate zeros** — re-measures current ADC zeros and DC voltage zeros on all 8 channels. Allowed only when every motor is Stopped or Fault. Relays stay off so voltage taps sit at 0 V.
 
 ### 5.4 Fault log (SD)
 
 If a card is mounted: file `/faults.csv` on the card.
 
 ```
-uptime_ms,motor,type,current_A
-15230,Pump1,I2T,18.400
+uptime_ms,motor,type,current_A,voltage_V
+15230,Pump1,I2T,18.400,24.100
 ```
 
-Types: `I2T`, `STALL`, `SENSOR_FAULT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Export downloads the same CSV. Clear rewrites the header only.
+Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Export downloads the same CSV. Clear rewrites the header only. An existing v1 CSV without the voltage column still parses; new writes include voltage.
 
 No card: Log page shows a yellow banner. Motors still protect.
 
@@ -315,13 +360,14 @@ Sketch folder: `MotorProtection/`. Arduino IDE compiles every `.ino` / `.cpp` in
 
 ```
 MotorProtection.ino     setup() / loop(), fail-safe relay OFF, spawn protection task
-config_pins.h           ONLY file with GPIO numbers and mV/A constants
+config_pins.h           ONLY file with GPIO numbers, mV/A, I²C, voltage divider
 config_limits.h         MAX_CHANNELS=8, steps, NVS keys, AP and login defaults
 types.h                 MotorRecord, commands, statuses, snapshots
 relays.cpp              Polarity-aware coil drive
 buzzer.cpp              Non-blocking LEDC tone sequencer
-sensing.cpp             ADC calibrate, true RMS (AC) or mean |i| (DC)
-protection.cpp          I²t / stall / sensor-fault state machine (FreeRTOS task)
+sensing.cpp             Current ADC calibrate, true RMS (AC) or mean |i| (DC)
+voltage.cpp             2× ADS1115 DC voltage, GAIN_ONE, calibrate
+protection.cpp          I²t / stall / UV / OV / sensor-fault (FreeRTOS task)
 motor_store.cpp         NVS blob + login credentials
 net_ap.cpp              SoftAP MPS-505 / mps50005
 sd_log.cpp              Optional /faults.csv
@@ -331,20 +377,20 @@ web.cpp / web_html.h    Async HTTP, session login, dashboard HTML
 Boot order in `setup()` (order matters for fail-safe):
 
 1. Relays: all pins OUTPUT LOW
-2. Buzzer, ADC
-3. NVS load (empty list if missing/corrupt — never invents motors)
+2. Buzzer, current ADC, ADS1115 (`Wire.begin(14, 42)`)
+3. NVS load (empty list if missing/corrupt/schema mismatch — never invents motors)
 4. De-energize relays using stored polarities
 5. Try SD mount (failure is a warning only)
-6. Calibrate all 8 zeros, start protection task (priority 5, core 1)
+6. Calibrate current and DC voltage zeros, start protection task (priority 5, core 1)
 7. SoftAP + web server
 8. Print banner, play power-up tone
 
 Two tasks after boot:
 
-- **Protection task** — sample ADC **outside** the status mutex, then apply I²t / stall / sensor-fault. Never writes SD or HTTP.
+- **Protection task** — sample current ADC and ADS1115 **outside** the status mutex, then apply I²t / stall / UV / OV / sensor-fault. Never writes SD or HTTP.
 - **`loop()`** — play queued buzzer tones, append SD log lines, keep the async web server running.
 
-Web handlers enqueue `START` / `STOP` / `RESET` / `CALIBRATE` / `RELOAD`. The dashboard reads a mutex-guarded snapshot (RMS, status, thermal %, heap, SD flag).
+Web handlers enqueue `START` / `STOP` / `RESET` / `CALIBRATE` / `RELOAD`. The dashboard reads a mutex-guarded snapshot (RMS, DC volts, status, thermal %, heap, SD flag, ADS ok).
 
 ---
 
@@ -408,10 +454,20 @@ Immediate trip `SENSOR_FAULT` if, on an assigned channel while Running:
 - Mean ADC voltage outside **0.05–3.05 V** (open or shorted divider)
 - |I_rms| above **40 A** (beyond a 30 A sensor)
 - AC reading **stuck** (identical millivolt samples across a full window) — a dead ADC looks like a flat line, which a real AC current is not
+- DC: ADS1115 missing / I²C timeout, |V_adc| > 4 V, or |V_bus| > 55 V
 
 Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (this is trip-immediately, not latched).
 
-### 7.5 State machine
+### 7.5 DC undervoltage / overvoltage
+
+After 250 ms of Running (so the relay has closed and the tap is live):
+
+- If UV > 0 and `V_bus < UV` → trip `UNDERVOLT`
+- If OV > 0 and `V_bus > OV` → trip `OVERVOLT`
+
+0 disables that trip. AC rated voltage is never compared.
+
+### 7.6 State machine
 
 ```
 Stopped --Start--> Running
@@ -422,7 +478,7 @@ Cooling --timer + auto-restart Off--> Fault
 Cooling or Fault --Reset--> Stopped
 ```
 
-Start is rejected from Fault/Cooling or if zeros were never calibrated.
+Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if the ADS1115 for that motor's channels is missing.
 
 ---
 
@@ -436,11 +492,13 @@ Start is rejected from Fault/Cooling or if zeros were never calibrated.
 | Session cookie | `mps_sess`, HttpOnly, 8 hours |
 | Channels / motors / steps | 8 / 8 / 8 |
 | ACS712 | 30 A, 66 mV/A, divider ×0.6 → 39.6 mV/A |
-| ADC | 12-bit, 11 dB attenuation, ADC1 only |
+| DC voltage | ADS1115 GAIN_ONE, 180 k / 10 k (×19), I²C 14/42 |
+| ADC | 12-bit, 11 dB attenuation, ADC1 only (current) |
 | RMS samples | ≥ 32 over ≥ 1 AC cycle |
 | Sensor |I| cap | 40 A |
-| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A` |
-| NVS namespace | `mps` (motors blob, auth_user, auth_pass) |
+| UV/OV grace | 250 ms after DC Start |
+| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V` |
+| NVS namespace | `mps` (motors blob, auth_user, auth_pass), schema 2 |
 
 ---
 
@@ -456,6 +514,9 @@ Start is rejected from Fault/Cooling or if zeros were never calibrated.
 | Log page yellow banner | No SD or 5 V fed to a 3.3 V breakout | Insert a FAT-formatted card on 3.3 V SPI; protection is unaffected |
 | Compile error `ledcChangeFrequency` | Mixing ESP32 core 2.x vs 3.x | Use Arduino-ESP32 3.x and `ledcAttach` / 3-arg `ledcChangeFrequency` |
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
+| DC Start disabled / "needs ADS1115" | Chip unpopulated or I²C on wrong pins | Serial `ADS1115 0x48/0x49`. Confirm ADDR wiring and GPIO 14/42, not 8/9 |
+| Live DC V stuck at 0 with motor running | Tap is upstream of the relay, or not calibrated | Tap **downstream** of the relay. Calibrate with motors Stopped |
+| Motors vanished after this flash | NVS schema 2 vs v1 blob | Expected. Re-enter motors. Auth credentials are unchanged |
 
 ---
 

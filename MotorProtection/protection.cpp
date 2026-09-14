@@ -4,6 +4,7 @@
 #include "protection.h"
 #include "config_limits.h"
 #include "sensing.h"
+#include "voltage.h"
 #include "relays.h"
 #include "motor_store.h"
 #include "config_pins.h"
@@ -22,11 +23,12 @@ static void setTone(ToneId id) {
   s_tone = id;
 }
 
-static void pushLog(int mi, FaultType ft, float current_a) {
+static void pushLog(int mi, FaultType ft, float current_a, float voltage_v) {
   LogEvent ev;
   ev.uptime_ms = millis();
   ev.type = ft;
   ev.current_a = current_a;
+  ev.voltage_v = voltage_v;
   strncpy(ev.motor, s_motors[mi].name, NAME_LEN - 1);
   ev.motor[NAME_LEN - 1] = 0;
   if (s_log_q) {
@@ -74,20 +76,38 @@ static void zeroEnergy(int mi) {
     const uint8_t c = s_motors[mi].channels[p];
     if (c < MAX_CHANNELS) {
       s_ch[c].energy_a2s = 0;
+      s_ch[c].last_rms = 0;
+      s_ch[c].last_v = 0;
     }
   }
   s_rt[mi].thermal_pct = 0;
 }
 
-static void trip(int mi, FaultType ft, float current_a) {
+static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
   motorRelaysOff(mi);
   s_rt[mi].status = MST_COOLING;
   s_rt[mi].last_fault = ft;
   s_rt[mi].fault_count++;
   s_rt[mi].cooling_deadline_ms = millis() + (uint32_t)(s_motors[mi].cooling_s * 1000.0f);
   zeroEnergy(mi);
-  pushLog(mi, ft, current_a);
+  pushLog(mi, ft, current_a, voltage_v);
   setTone(TONE_FAULT);
+}
+
+static bool motorAdsReady(const MotorRecord *m) {
+  if (!m || m->is_ac) {
+    return true;
+  }
+  for (int p = 0; p < m->phase_count; p++) {
+    const uint8_t c = m->channels[p];
+    if (c >= MAX_CHANNELS) {
+      continue;
+    }
+    if (!voltageAdsOk(c < 4 ? 0 : 1) || !s_ch[c].v_calibrated) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static bool allIdleLocked() {
@@ -140,6 +160,9 @@ static void handleCmd(const Command &cmd) {
     if (!s_calibrated) {
       return;
     }
+    if (!motorAdsReady(&s_motors[mi])) {
+      return;
+    }
     zeroEnergy(mi);
     s_rt[mi].status = MST_RUNNING;
     s_rt[mi].run_start_ms = millis();
@@ -165,8 +188,9 @@ static void handleCmd(const Command &cmd) {
   }
 }
 
-static void applySample(int mi, int p, const SampleResult &s, uint32_t now, float dt,
-                        float *hottest, FaultType *trip_ft, float *trip_i) {
+static void applySample(int mi, int p, const SampleResult &s, const VoltageSample *vs,
+                        uint32_t now, float dt, float *hottest, FaultType *trip_ft,
+                        float *trip_i, float *trip_v) {
   MotorRecord *m = &s_motors[mi];
   const uint8_t c = m->channels[p];
   if (c >= MAX_CHANNELS) {
@@ -174,6 +198,9 @@ static void applySample(int mi, int p, const SampleResult &s, uint32_t now, floa
   }
   s_ch[c].last_rms = s.rms;
   s_ch[c].last_ms = now;
+  if (vs) {
+    s_ch[c].last_v = vs->v_bus;
+  }
 
   if (*trip_ft != FT_NONE) {
     return;
@@ -181,12 +208,41 @@ static void applySample(int mi, int p, const SampleResult &s, uint32_t now, floa
   if (s.out_of_range || fabsf(s.rms) > SENSOR_I_CAP || (m->is_ac && s.stuck)) {
     *trip_ft = FT_SENSOR;
     *trip_i = s.rms;
+    if (vs) {
+      *trip_v = vs->v_bus;
+    }
     return;
   }
   if (s.rms >= m->stall_amps) {
     *trip_ft = FT_STALL;
     *trip_i = s.rms;
+    if (vs) {
+      *trip_v = vs->v_bus;
+    }
     return;
+  }
+  if (vs && !m->is_ac) {
+    if (!vs->present || vs->fault) {
+      *trip_ft = FT_SENSOR;
+      *trip_i = s.rms;
+      *trip_v = vs->v_bus;
+      return;
+    }
+    const uint32_t age = now - s_rt[mi].run_start_ms;
+    if (age >= UV_GRACE_MS) {
+      if (m->ov_volts > 0.0f && vs->v_bus > m->ov_volts) {
+        *trip_ft = FT_OVERVOLT;
+        *trip_i = s.rms;
+        *trip_v = vs->v_bus;
+        return;
+      }
+      if (m->uv_volts > 0.0f && vs->v_bus < m->uv_volts) {
+        *trip_ft = FT_UNDERVOLT;
+        *trip_i = s.rms;
+        *trip_v = vs->v_bus;
+        return;
+      }
+    }
   }
 
   const int lo = lowestKIndex(m);
@@ -204,6 +260,9 @@ static void applySample(int mi, int p, const SampleResult &s, uint32_t now, floa
         if (s_ch[c].energy_a2s >= et) {
           *trip_ft = FT_I2T;
           *trip_i = s.rms;
+          if (vs) {
+            *trip_v = vs->v_bus;
+          }
         }
       }
     }
@@ -224,12 +283,17 @@ static void processMotorCooling(int mi, uint32_t now) {
   MotorRuntime *rt = &s_rt[mi];
   if ((int32_t)(now - rt->cooling_deadline_ms) >= 0) {
     if (m->auto_restart) {
-      zeroEnergy(mi);
-      rt->status = MST_RUNNING;
-      rt->run_start_ms = now;
-      rt->last_fault = FT_NONE;
-      motorRelaysOn(mi);
-      setTone(TONE_STARTED);
+      if (!motorAdsReady(m)) {
+        rt->status = MST_FAULT;
+        setTone(TONE_FAULT);
+      } else {
+        zeroEnergy(mi);
+        rt->status = MST_RUNNING;
+        rt->run_start_ms = now;
+        rt->last_fault = FT_NONE;
+        motorRelaysOn(mi);
+        setTone(TONE_STARTED);
+      }
     } else {
       rt->status = MST_FAULT;
       setTone(TONE_FAULT);
@@ -246,6 +310,7 @@ void protectionBegin() {
   memset(s_ch, 0, sizeof(s_ch));
   motorStoreGet(s_motors);
   sensingCalibrateAll(s_ch);
+  voltageCalibrateAll(s_ch);
   s_calibrated = 1;
 }
 
@@ -272,6 +337,7 @@ void protectionTask(void *arg) {
       memcpy(tmpch, s_ch, sizeof(tmpch));
       xSemaphoreGive(s_mu);
       sensingCalibrateAll(tmpch);
+      voltageCalibrateAll(tmpch);
       xSemaphoreTake(s_mu, portMAX_DELAY);
       memcpy(s_ch, tmpch, sizeof(tmpch));
       s_calibrated = 1;
@@ -296,6 +362,7 @@ void protectionTask(void *arg) {
       uint8_t mains_hz;
       uint8_t channels[MAX_PHASES];
       SampleResult res[MAX_PHASES];
+      VoltageSample vres[MAX_PHASES];
     } jobs[MAX_MOTORS];
     memset(jobs, 0, sizeof(jobs));
     int nj = 0;
@@ -327,6 +394,9 @@ void protectionTask(void *arg) {
           continue;
         }
         jobs[j].res[p] = sensingSample((int)c, &chcopy[c], jobs[j].is_ac, jobs[j].mains_hz);
+        if (!jobs[j].is_ac) {
+          jobs[j].vres[p] = voltageSample((int)c, &chcopy[c]);
+        }
       }
     }
 
@@ -356,12 +426,14 @@ void protectionTask(void *arg) {
       float hottest = 0;
       FaultType trip_ft = FT_NONE;
       float trip_i = 0;
+      float trip_v = 0;
       for (int p = 0; p < job->phase_count; p++) {
-        applySample(i, p, job->res[p], now, dt, &hottest, &trip_ft, &trip_i);
+        const VoltageSample *vs = job->is_ac ? nullptr : &job->vres[p];
+        applySample(i, p, job->res[p], vs, now, dt, &hottest, &trip_ft, &trip_i, &trip_v);
       }
       s_rt[i].thermal_pct = hottest;
       if (trip_ft != FT_NONE) {
-        trip(i, trip_ft, trip_i);
+        trip(i, trip_ft, trip_i, trip_v);
       }
     }
     xSemaphoreGive(s_mu);
@@ -385,12 +457,16 @@ void protectionSnapshot(StatusSnapshot *out) {
   xSemaphoreTake(s_mu, portMAX_DELAY);
   memset(out, 0, sizeof(*out));
   out->sd_ok = s_sd_ok;
+  out->ads_ok[0] = voltageAdsOk(0) ? 1 : 0;
+  out->ads_ok[1] = voltageAdsOk(1) ? 1 : 0;
   out->free_heap = ESP.getFreeHeap();
   out->calibrated = s_calibrated;
   memcpy(out->motors, s_motors, sizeof(s_motors));
   memcpy(out->rt, s_rt, sizeof(s_rt));
   for (int i = 0; i < MAX_CHANNELS; i++) {
     out->rms[i] = s_ch[i].last_rms;
+    out->volts[i] = s_ch[i].last_v;
+    out->v_calibrated[i] = s_ch[i].v_calibrated;
   }
   for (int i = 0; i < MAX_MOTORS; i++) {
     out->thermal_pct[i] = s_rt[i].thermal_pct;

@@ -13,7 +13,7 @@
 #include "config_limits.h"
 
 static AsyncWebServer s_server(80);
-static char s_json[12288];
+static char s_json[16384];
 static SemaphoreHandle_t s_json_mu;
 static char s_sess[33];
 static uint32_t s_sess_exp_ms;
@@ -167,6 +167,9 @@ static void sendErr(AsyncWebServerRequest *req, const char *err) {
       }
       esc[o++] = '\\';
     }
+    if ((unsigned char)err[i] < 32) {
+      continue;
+    }
     if (err[i] == '\n' || err[i] == '\r') {
       continue;
     }
@@ -196,6 +199,9 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m, char *err, s
   m->stall_amps = paramF(req, "stall", "0");
   m->cooling_s = paramF(req, "cool", "0");
   m->auto_restart = (uint8_t)paramI(req, "auto", "0");
+  m->rated_ac_v = paramF(req, "vac", "0");
+  m->uv_volts = paramF(req, "uv", "0");
+  m->ov_volts = paramF(req, "ov", "0");
   const uint8_t pol = (uint8_t)paramI(req, "pol", "1");
   for (int p = 0; p < MAX_PHASES; p++) {
     m->relay_active_high[p] = pol;
@@ -227,6 +233,17 @@ static const char *stName(MotorStatus s) {
   }
 }
 
+static const char *ftName(FaultType t) {
+  switch (t) {
+    case FT_I2T:       return "I2T";
+    case FT_STALL:     return "STALL";
+    case FT_SENSOR:    return "SENSOR_FAULT";
+    case FT_UNDERVOLT: return "UNDERVOLT";
+    case FT_OVERVOLT:  return "OVERVOLT";
+    default:           return "";
+  }
+}
+
 static void handleStatus(AsyncWebServerRequest *req) {
   if (!auth(req)) {
     return;
@@ -237,8 +254,9 @@ static void handleStatus(AsyncWebServerRequest *req) {
   char *w = s_json;
   char *end = s_json + sizeof(s_json);
   int n = snprintf(w, end - w,
-                   "{\"ok\":1,\"sd_ok\":%u,\"heap\":%u,\"calibrated\":%u,\"free_ch\":%d,\"motors\":[",
-                   (unsigned)snap.sd_ok, (unsigned)snap.free_heap, (unsigned)snap.calibrated,
+                   "{\"ok\":1,\"sd_ok\":%u,\"ads_ok\":[%u,%u],\"heap\":%u,\"calibrated\":%u,\"free_ch\":%d,\"motors\":[",
+                   (unsigned)snap.sd_ok, (unsigned)snap.ads_ok[0], (unsigned)snap.ads_ok[1],
+                   (unsigned)snap.free_heap, (unsigned)snap.calibrated,
                    motorStoreFreeCount());
   if (n < 0 || w + n >= end) {
     jsonUnlock();
@@ -275,7 +293,19 @@ static void handleStatus(AsyncWebServerRequest *req) {
       const float r = (c < MAX_CHANNELS) ? snap.rms[c] : 0;
       rw += snprintf(rw, rmsbuf + sizeof(rmsbuf) - rw, "%s%.3f", p ? "," : "", (double)r);
     }
-    char stepbuf[256];
+    char vbuf[48];
+    char *vw = vbuf;
+    *vw = 0;
+    uint8_t vcal = 1;
+    for (int p = 0; p < m->phase_count; p++) {
+      const uint8_t c = m->channels[p];
+      const float v = (c < MAX_CHANNELS) ? snap.volts[c] : 0;
+      vw += snprintf(vw, vbuf + sizeof(vbuf) - vw, "%s%.3f", p ? "," : "", (double)v);
+      if (c >= MAX_CHANNELS || !snap.v_calibrated[c]) {
+        vcal = 0;
+      }
+    }
+    char stepbuf[384];
     char *sw = stepbuf;
     *sw++ = '[';
     *sw = 0;
@@ -289,15 +319,19 @@ static void handleStatus(AsyncWebServerRequest *req) {
     }
     n = snprintf(w, end - w,
                  "{\"idx\":%d,\"used\":1,\"name\":\"%s\",\"status\":%u,\"status_s\":\"%s\","
-                 "\"uptime_ms\":%u,\"fault_count\":%u,\"channels\":[%s],\"phases\":%u,"
-                 "\"rms\":[%s],\"thermal_pct\":%.1f,\"in\":%.4f,\"stall\":%.4f,\"cool\":%.3f,"
-                 "\"ac\":%u,\"hz\":%u,\"auto\":%u,\"pol\":%u,\"steps\":%s}",
+                 "\"uptime_ms\":%u,\"fault_count\":%u,\"last_fault\":\"%s\",\"channels\":[%s],"
+                 "\"phases\":%u,\"rms\":[%s],\"volts\":[%s],\"thermal_pct\":%.1f,"
+                 "\"in\":%.4f,\"stall\":%.4f,\"cool\":%.3f,\"ac\":%u,\"hz\":%u,"
+                 "\"vac\":%.3f,\"uv\":%.3f,\"ov\":%.3f,\"auto\":%u,\"pol\":%u,\"vcal\":%u,\"steps\":%s}",
                  i, m->name, (unsigned)snap.rt[i].status, stName(snap.rt[i].status),
                  (unsigned)snap.rt[i].run_start_ms, (unsigned)snap.rt[i].fault_count,
-                 chbuf, (unsigned)m->phase_count, rmsbuf, (double)snap.thermal_pct[i],
+                 ftName(snap.rt[i].last_fault), chbuf, (unsigned)m->phase_count,
+                 rmsbuf, vbuf, (double)snap.thermal_pct[i],
                  (double)m->in_amps, (double)m->stall_amps, (double)m->cooling_s,
-                 (unsigned)m->is_ac, (unsigned)m->mains_hz, (unsigned)m->auto_restart,
-                 (unsigned)m->relay_active_high[0], stepbuf);
+                 (unsigned)m->is_ac, (unsigned)m->mains_hz,
+                 (double)m->rated_ac_v, (double)m->uv_volts, (double)m->ov_volts,
+                 (unsigned)m->auto_restart, (unsigned)m->relay_active_high[0],
+                 (unsigned)vcal, stepbuf);
     if (n < 0 || w + n >= end) {
       jsonUnlock();
       sendErr(req, "json overflow");
@@ -324,6 +358,34 @@ static void handleCmd(AsyncWebServerRequest *req, CmdType t) {
   if (idx < 0 || idx >= MAX_MOTORS) {
     sendErr(req, "bad idx");
     return;
+  }
+  if (t == CMD_START) {
+    StatusSnapshot snap;
+    protectionSnapshot(&snap);
+    if (snap.motors[idx].used && !snap.motors[idx].is_ac) {
+      bool ads_ok = true;
+      bool vcal = true;
+      for (int p = 0; p < snap.motors[idx].phase_count; p++) {
+        const uint8_t c = snap.motors[idx].channels[p];
+        if (c >= MAX_CHANNELS) {
+          continue;
+        }
+        if (!snap.ads_ok[c < 4 ? 0 : 1]) {
+          ads_ok = false;
+        }
+        if (!snap.v_calibrated[c]) {
+          vcal = false;
+        }
+      }
+      if (!ads_ok) {
+        sendErr(req, "DC start needs the ADS1115 for this motor's channels");
+        return;
+      }
+      if (!vcal) {
+        sendErr(req, "calibrate DC voltage zeros first");
+        return;
+      }
+    }
   }
   if (!protectionPost(t, (uint8_t)idx)) {
     sendErr(req, "queue full");
@@ -456,7 +518,8 @@ static void handleLog(AsyncWebServerRequest *req) {
     char mot[NAME_LEN] = {0};
     char typ[24] = {0};
     char cur[24] = {0};
-    sscanf(line, "%23[^,],%23[^,],%23[^,],%23s", up, mot, typ, cur);
+    char volt[24] = {0};
+    sscanf(line, "%23[^,],%23[^,],%23[^,],%23[^,],%23s", up, mot, typ, cur, volt);
     if (!first) {
       if (w + 2 < end) {
         *w++ = ',';
@@ -464,8 +527,8 @@ static void handleLog(AsyncWebServerRequest *req) {
     }
     first = false;
     k = snprintf(w, end - w,
-                 "{\"uptime_ms\":\"%s\",\"motor\":\"%s\",\"type\":\"%s\",\"current_A\":\"%s\"}",
-                 up, mot, typ, cur);
+                 "{\"uptime_ms\":\"%s\",\"motor\":\"%s\",\"type\":\"%s\",\"current_A\":\"%s\",\"voltage_V\":\"%s\"}",
+                 up, mot, typ, cur, volt);
     if (k < 0 || w + k >= end) {
       break;
     }
@@ -544,7 +607,8 @@ static void handleLoginPost(AsyncWebServerRequest *req) {
   if (timingEq(got_u, u) && timingEq(got_p, p)) {
     mintSession();
     char setck[80];
-    snprintf(setck, sizeof(setck), "mps_sess=%s; Path=/; HttpOnly; SameSite=Strict", s_sess);
+    snprintf(setck, sizeof(setck),
+             "mps_sess=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800", s_sess);
     r = req->beginResponse(302, "text/plain", "");
     r->addHeader("Location", "/");
     r->addHeader("Set-Cookie", setck);

@@ -19,8 +19,13 @@ static const float SENSOR_I_CAP  = 40.0f;
 static const float VADC_MIN      = 0.05f;
 static const float VADC_MAX      = 3.05f;
 
+static const int V_CAL_SAMPLES     = 16;
+static const float VBUS_CAP        = 55.0f;
+static const float VADC_ABS_MAX    = 4.0f;
+static const uint32_t UV_GRACE_MS  = 250;
+
 static const uint32_t NVS_MAGIC   = 0x4D505331u;
-static const uint16_t NVS_SCHEMA  = 1;
+static const uint16_t NVS_SCHEMA  = 2;
 
 static const char *NVS_NS        = "mps";
 static const char *NVS_KEY_BLOB  = "motors";

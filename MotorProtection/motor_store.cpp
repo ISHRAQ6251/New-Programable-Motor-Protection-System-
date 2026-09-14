@@ -83,9 +83,28 @@ static bool validateRecord(const MotorRecord *m, char *err, size_t err_len) {
     snprintf(err, err_len, "cooling time must be > 0");
     return false;
   }
-  if (m->is_ac && m->mains_hz != 50 && m->mains_hz != 60) {
-    snprintf(err, err_len, "mains_hz must be 50 or 60");
-    return false;
+  if (m->is_ac) {
+    if (m->mains_hz != 50 && m->mains_hz != 60) {
+      snprintf(err, err_len, "mains_hz must be 50 or 60");
+      return false;
+    }
+    if (m->rated_ac_v <= 0.0f || m->rated_ac_v > 1000.0f) {
+      snprintf(err, err_len, "rated AC voltage must be 0.1..1000");
+      return false;
+    }
+  } else {
+    if (m->uv_volts < 0.0f || m->ov_volts < 0.0f) {
+      snprintf(err, err_len, "UV/OV cannot be negative");
+      return false;
+    }
+    if (m->uv_volts > 0.0f && m->ov_volts > 0.0f && m->ov_volts <= m->uv_volts) {
+      snprintf(err, err_len, "overvoltage must be greater than undervoltage");
+      return false;
+    }
+    if (m->uv_volts > VBUS_CAP || m->ov_volts > VBUS_CAP) {
+      snprintf(err, err_len, "UV/OV must be at most 55 V");
+      return false;
+    }
   }
   if (m->step_count < 1 || m->step_count > MAX_STEPS) {
     snprintf(err, err_len, "step_count must be 1..8");
@@ -140,7 +159,8 @@ void motorStoreLoad() {
     return;
   }
   if (tmp.magic != NVS_MAGIC || tmp.schema_version != NVS_SCHEMA) {
-    Serial.println("NVS: corrupt/unknown schema — empty motor list");
+    Serial.printf("NVS: schema %u (need %u) — starting empty\n",
+                  (unsigned)tmp.schema_version, (unsigned)NVS_SCHEMA);
     clearMotors();
     unlock();
     return;
@@ -269,6 +289,13 @@ int motorStoreAdd(const MotorRecord *in, char *err, size_t err_len) {
   }
   memcpy(rec.channels, ch, sizeof(ch));
   rec.used = 1;
+  if (rec.is_ac) {
+    rec.uv_volts = 0;
+    rec.ov_volts = 0;
+  } else {
+    rec.rated_ac_v = 0;
+    rec.mains_hz = 0;
+  }
   s_blob.motors[slot] = rec;
   unlock();
   if (!motorStoreSave()) {
@@ -297,6 +324,13 @@ bool motorStoreEdit(int idx, const MotorRecord *in, char *err, size_t err_len) {
   rec.used = 1;
   rec.phase_count = s_blob.motors[idx].phase_count;
   memcpy(rec.channels, s_blob.motors[idx].channels, sizeof(rec.channels));
+  if (rec.is_ac) {
+    rec.uv_volts = 0;
+    rec.ov_volts = 0;
+  } else {
+    rec.rated_ac_v = 0;
+    rec.mains_hz = 0;
+  }
   s_blob.motors[idx] = rec;
   unlock();
   return motorStoreSave();

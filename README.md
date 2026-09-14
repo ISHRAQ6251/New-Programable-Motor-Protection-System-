@@ -10,11 +10,13 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 
 ## Features
 
-- Up to **8 channels** = 8 current sensors + 8 relays
+- Up to **8 channels** = 8 current sensors + 8 relays + 8 DC voltage taps (2× ADS1115)
 - **1-phase** motor = 1 channel; **3-phase** motor = 3 linked channels, one dashboard row
 - Classic **I²t energy** trip curve (not inverse-time interpolation)
 - Independent **stall** trip on the next RMS window
-- **Sensor-fault** trip (stuck ADC, out-of-range Vadc, or |I| > 40 A)
+- **Sensor-fault** trip (stuck ADC, out-of-range Vadc, |I| > 40 A, or missing ADS1115 on a DC channel)
+- Live **DC voltage** with optional undervoltage / overvoltage trip (0 = that trip disabled)
+- **Rated AC voltage** is a manual nameplate field (not sensed, not used for trips)
 - Desktop dashboard on SoftAP `MPS-505` / `mps50005`
 - Themed `/login` page + HttpOnly session cookie (default `mps` / `mps500`)
 - Motor config in NVS; protection still runs if the SD card is missing
@@ -29,11 +31,12 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 | Arduino IDE board | ESP32S3 Dev Module, Flash 16 MB, PSRAM OPI |
 | Sensors | ACS712-30A, 66 mV/A, 5 V supply |
 | Analog path | 10 k / 15 k divider (x0.6) to ADC1 — about 39.6 mV/A |
+| DC voltage | 2× ADS1115 (I²C 0x48 / 0x49), 180 k / 10 k divider, tap downstream of each relay |
 | Relays | Logic-level modules, default active-HIGH, boot LOW = OFF |
 | SD | 3.3 V SPI breakout (not SDIO, not 5 V) |
 | Buzzer | Passive, LEDC PWM |
 
-Zero-current voltage is **calibrated** at boot. Do not assume 1.5 V.
+Zero-current and DC zero-voltage are **calibrated** at boot (relays open → 0 V at each voltage tap). Do not assume 1.5 V or 0.000 V.
 
 Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0 Serial). Current-sense pins are ADC1 only.
 
@@ -47,6 +50,7 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 | Relay CH0–CH7 | 15, 16, 17, 18, 38, 39, 40, 41 |
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 |
 | Buzzer | 21 |
+| I²C SDA / SCL | 14 / 42 |
 
 ## Protection logic (short)
 
@@ -65,6 +69,8 @@ Stall: `I_rms >= stall_amps` on the next window → trip **STALL** immediately.
 
 Sensor fault → trip **SENSOR_FAULT** immediately. Auto-restart still applies.
 
+DC only, after 250 ms of Running: live V below UV (if UV > 0) → **UNDERVOLT**; above OV (if OV > 0) → **OVERVOLT**. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared.
+
 On trip: de-energize that motor's relay(s), sound the fault tone, append an SD log line if a card is mounted, enter **Cooling**. After cooling: auto-restart if enabled, else **Fault**. Reset from the UI returns Fault/Cooling to Stopped and silences the buzzer.
 
 3-phase: one motor, three channels; any phase trips all three relays; the UI shows one row. Thermal % is the hottest phase (`100 × E / E_trip`).
@@ -73,7 +79,7 @@ On trip: de-energize that motor's relay(s), sound the fault tone, append an SD l
 
 1. Install **esp32 by Espressif Systems** (Arduino-ESP32 **3.x**) from Boards Manager.
 2. Board: **ESP32S3 Dev Module**. Flash **16MB (128Mb)**. PSRAM **OPI PSRAM**. Core Debug Level **Debug**.
-3. Library Manager: **ESPAsyncWebServer** and **AsyncTCP** (ESP32Async forks).
+3. Library Manager: **ESPAsyncWebServer** and **AsyncTCP** (ESP32Async forks), **Adafruit ADS1X15** and **Adafruit BusIO**.
 4. Open the sketch folder `MotorProtection/` and upload.
 
 Built-in (do not install separately): WiFi, Preferences, SD, SPI, LEDC.
@@ -101,22 +107,23 @@ Serial monitor: **115200** baud. First boot `NVS: no motor blob — starting emp
 
 There is no internet through this network. That is expected. WPA2 needs an 8-character AP password (`mps50005`, not `mps505`). Dashboard login is **not** the AP password. Change credentials on the Security page after first real use.
 
-Pages: Dashboard, Add motor, Edit, Log, Security. Live status polls about once per second.
+Pages: Dashboard, Add motor, Edit, Log, Security. Live status polls about once per second. Dashboard shows live RMS, live DC voltage (em dash for AC), and thermal %.
 
-Statuses: **Stopped**, **Running**, **Fault**, **Cooling**. Delete a motor only from Stopped or Fault. Calibrate zero-current only when every motor is Stopped or Fault.
+Statuses: **Stopped**, **Running**, **Fault**, **Cooling**. Delete a motor only from Stopped or Fault. Calibrate current and DC voltage zeros only when every motor is Stopped or Fault.
 
 ## Repository layout
 
 ```
 MotorProtection/          Arduino IDE sketch (firmware)
   MotorProtection.ino     setup() / loop(), fail-safe relay OFF
-  config_pins.h           GPIO and mV/A constants (only file with pin numbers)
+  config_pins.h           GPIO, mV/A, I²C, voltage-divider constants (only file with pin numbers)
   config_limits.h         MAX_*, AP/auth defaults, NVS keys
   types.h                 MotorRecord, commands, statuses
   relays.cpp              Polarity-aware coil drive
   buzzer.cpp              Non-blocking LEDC tones
-  sensing.cpp             Calibrate + true RMS / DC mean
-  protection.cpp          I²t / stall / sensor-fault task (prio 5, core 1)
+  sensing.cpp             Current: calibrate + true RMS / DC mean
+  voltage.cpp             DC voltage: 2× ADS1115, GAIN_ONE, calibrate
+  protection.cpp          I²t / stall / UV / OV / sensor-fault task (prio 5, core 1)
   motor_store.cpp         NVS blob + login credentials
   net_ap.cpp              SoftAP MPS-505
   sd_log.cpp              Optional /faults.csv
@@ -136,7 +143,8 @@ LICENSE                   MIT
 | Sensor \|I\| cap | 40 A |
 | ADC | 12-bit, 11 dB, ADC1 only |
 | NVS namespace | `mps` (motors blob, auth_user, auth_pass) |
-| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A` |
+| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V` |
+| NVS schema | 2 (v1 motor blob is discarded on first boot of this build) |
 | Timestamps | `millis()` uptime (no NTP on SoftAP) |
 
 ## Safety

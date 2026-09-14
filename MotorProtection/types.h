@@ -14,7 +14,9 @@ enum FaultType : uint8_t {
   FT_NONE = 0,
   FT_I2T,
   FT_STALL,
-  FT_SENSOR
+  FT_SENSOR,
+  FT_UNDERVOLT,
+  FT_OVERVOLT
 };
 
 enum CmdType : uint8_t {
@@ -51,6 +53,9 @@ struct MotorRecord {
   uint8_t step_count;
   float   step_k[MAX_STEPS];
   float   step_t_s[MAX_STEPS];
+  float   rated_ac_v;
+  float   uv_volts;
+  float   ov_volts;
 };
 
 struct MotorBlob {
@@ -70,6 +75,7 @@ struct LogEvent {
   char     motor[NAME_LEN];
   FaultType type;
   float    current_a;
+  float    voltage_v;
 };
 
 struct ChannelRuntime {
@@ -78,6 +84,9 @@ struct ChannelRuntime {
   float    energy_a2s;
   uint32_t last_ms;
   uint8_t  calibrated;
+  float    v_zero;
+  float    last_v;
+  uint8_t  v_calibrated;
 };
 
 struct MotorRuntime {
@@ -91,10 +100,13 @@ struct MotorRuntime {
 
 struct StatusSnapshot {
   uint8_t       sd_ok;
+  uint8_t       ads_ok[2];
   uint32_t      free_heap;
   uint8_t       calibrated;
   MotorRecord   motors[MAX_MOTORS];
   MotorRuntime  rt[MAX_MOTORS];
   float         rms[MAX_CHANNELS];
+  float         volts[MAX_CHANNELS];
+  uint8_t       v_calibrated[MAX_CHANNELS];
   float         thermal_pct[MAX_MOTORS];
 };
