@@ -17,7 +17,7 @@ University firmware project: replace a bimetallic thermal overload relay with an
 
 Hardware is treated as already wired. This repo is firmware only.
 
-Design spec: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md`
+Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2) and `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta).
 
 License: MIT (`LICENSE`). Project overview: `README.md`. User-facing guide: `docs/USER_MANUAL.md`.
 
@@ -169,4 +169,4 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 4. DC: apply voltage downstream of a closed relay; confirm live V and UV/OV trips (0 = disabled)
 5. Confirm missing-SD path (log page banner) and present-SD CSV write
 
-Last firmware: DC voltage + AC rated-V field on top of `3b7a424`. Docs (`AGENTS.md`, `docs/USER_MANUAL.md`) follow.
+Last firmware: DC voltage + AC rated-V field on top of `3b7a424`, committed `12941fb`. Docs (`AGENTS.md`, `README.md`, `docs/USER_MANUAL.md`, both design specs) updated.

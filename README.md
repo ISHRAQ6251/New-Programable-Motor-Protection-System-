@@ -129,7 +129,7 @@ MotorProtection/          Arduino IDE sketch (firmware)
   sd_log.cpp              Optional /faults.csv
   web.cpp, web_html.h     Session login + dashboard
 docs/USER_MANUAL.md       Pins, wiring, libraries, user guide, I²t math
-docs/superpowers/specs/   Approved design spec
+docs/superpowers/specs/   Approved design specs (v1 + v2)
 AGENTS.md                 Project source of truth for contributors
 LICENSE                   MIT
 ```

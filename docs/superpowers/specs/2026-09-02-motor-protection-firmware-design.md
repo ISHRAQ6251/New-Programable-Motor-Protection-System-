@@ -1,8 +1,8 @@
 # ESP32-S3 Programmable Motor Protection Firmware — Design
 
-Date: 2026-09-02
-Status: Approved. v1 firmware implemented in `MotorProtection/` (not compiled in this environment, not committed).
-Scope: ESP32-S3 firmware only. Sensors, relays, SD breakout, and buzzer are treated as already wired.
+Date: 2026-09-02 (updated 2026-09-13 to fold in the DC-voltage / rated-AC extension)
+Status: Approved. v1 + DC voltage / AC rated-V field implemented in `MotorProtection/` (not compiled in this environment; committed). The focused delta spec is `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md`.
+Scope: ESP32-S3 firmware only. Sensors, relays, SD breakout, voltage taps, and buzzer are treated as already wired.
 
 ## 1. Purpose
 
@@ -21,7 +21,12 @@ Correctness and code clarity matter more than polish. This is a university engin
 | AP credentials | SSID `MPS-505`, password `mps50005`, IP `192.168.4.1` |
 | Web auth | Themed `/login` page + HttpOnly session cookie, default `mps` / `mps500`, stored in NVS |
 | ACS712 | ACS712-30A, 66 mV/A, all channels |
-| Divider | R1=10 kΩ, R2=15 kΩ, ratio 0.6 |
+| Current divider | R1=10 kΩ, R2=15 kΩ, ratio 0.6 |
+| DC voltage | 2× ADS1115 on I²C (0x48 / 0x49), `GAIN_ONE`, tap downstream of each relay |
+| Voltage divider | R1=180 kΩ, R2=10 kΩ, scale 19. Zero calibrated with relay open |
+| UV / OV trip | DC only, optional: `0` disables each independently; if both set, OV > UV |
+| Rated AC voltage | AC nameplate only, stored in NVS. Never sensed, never a trip input |
+| I²C pins | GPIO 14 SDA / 42 SCL. Explicit `Wire.begin(14, 42)`, not default 8/9 |
 | Relay default | Active-HIGH, OFF=LOW. De-energized on boot. Per-channel override in motor record |
 | Mains frequency | Per motor, 50 or 60 Hz (AC only) |
 | I²t model | Classic energy: `E += I_rms² × dt`, trip vs `(k×In)² × t_trip` |
@@ -59,7 +64,8 @@ Rules:
 - The protection task never mounts SD, never formats strings for HTTP, and never blocks on Wi-Fi.
 - Relays are driven only from the protection task (and from `setup()` fail-safe OFF before tasks start).
 - Web handlers enqueue commands (`START`, `STOP`, `RESET`, `CALIBRATE`, motor CRUD already applied to NVS then `RELOAD`).
-- Live dashboard reads a mutex-guarded snapshot (`rms[8]`, `energy`, `status`, `uptime`, `fault_count`, `thermal_pct`, `sd_ok`, `free_heap`).
+- Live dashboard reads a mutex-guarded snapshot (`rms[8]`, `volts[8]`, `energy`, `status`, `uptime`, `fault_count`, `thermal_pct`, `ads_ok[2]`, `v_calibrated[8]`, `last_fault`, `sd_ok`, `free_heap`).
+- Current ADC and ADS1115 are sampled **outside** the status mutex, then the mutex is re-taken to apply I²t / UV / OV / stall / sensor-fault. The mutex is never held across `analogRead` or I²C.
 
 ### 3.1 File split
 
@@ -68,12 +74,13 @@ Arduino IDE sketch folder `MotorProtection/`:
 | File | Responsibility |
 |---|---|
 | `MotorProtection.ino` | `setup()`/`loop()`, task spawn, boot Serial banner |
-| `config_pins.h` | Only file with GPIO numbers |
-| `config_limits.h` | `MAX_CHANNELS`, `MAX_MOTORS`, `MAX_STEPS`, string lengths |
-| `types.h` | Shared enums/structs (motor record, commands, status) |
-| `motor_store.h/.cpp` | NVS load/save of motor list + auth credentials |
-| `sensing.h/.cpp` | ADC, zero calibration, RMS / DC average |
-| `protection.h/.cpp` | I²t, stall, cooling, motor state machine |
+| `config_pins.h` | Only file with GPIO numbers, mV/A, I²C pins/addresses, voltage-divider constants |
+| `config_limits.h` | `MAX_CHANNELS`, `MAX_MOTORS`, `MAX_STEPS`, string lengths, `NVS_SCHEMA` |
+| `types.h` | Shared enums/structs (motor record, commands, status, volts/ads_ok) |
+| `motor_store.h/.cpp` | NVS load/save of motor list + auth credentials; field validation |
+| `sensing.h/.cpp` | Current ADC, zero calibration, RMS / DC average |
+| `voltage.h/.cpp` | 2× ADS1115 DC voltage: re-bind Wire, calibrate zeros, sample |
+| `protection.h/.cpp` | I²t, stall, UV/OV, cooling, motor state machine |
 | `relays.h/.cpp` | Polarity-aware coil drive, boot fail-safe OFF |
 | `buzzer.h/.cpp` | Named non-blocking LEDC tunes |
 | `sd_log.h/.cpp` | Optional CSV log; safe no-op if unmounted |
@@ -109,14 +116,25 @@ Module: ESP32-S3-N16R8. Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/4
 | SD SCK | 12 | |
 | SD CS | 10 | |
 | Buzzer | 21 | LEDC PWM, passive |
+| I²C SDA | 14 | ADS1115 — explicit `Wire.begin(14, 42)`, not default 8/9 |
+| I²C SCL | 42 | ADS1115 |
 
-Analog path:
+Analog path (current):
 
 - ACS712-30A on 5 V, Vout = 2.5 V + 0.066 V/A × I
 - Divider 0.6 → Vadc ≈ 1.5 V + 0.0396 V/A × I
 - ESP32 ADC 12-bit, 11 dB attenuation (full-scale near 3.1–3.3 V)
 - Sensitivity used in firmware: `MV_PER_AMP = 66.0f * 0.6f` (39.6 mV/A) relative to the calibrated zero, not relative to theoretical 1.5 V
 - Zero-current ADC counts are measured at runtime per channel
+
+Analog path (DC voltage):
+
+- 2× ADS1115 on I²C: 0x48 (ADDR→GND) = CH0–3 AIN0–3; 0x49 (ADDR→VDD) = CH4–7 AIN0–3
+- Per channel divider R1=180 kΩ / R2=10 kΩ (scale 19), 0–50 V → ~0–2.63 V
+- Gain `GAIN_ONE` (±4.096 V), data rate 250 SPS, set explicitly after `begin()`
+- `V_bus = (V_adc - v_zero) * 19.0`; `v_zero` is calibrated with the relay open, never assumed 0 V
+- Tap is the motor terminal **downstream of that channel's relay**, not the shared bus
+- Adafruit BusIO's `ads.begin()` calls `Wire.begin()` with no pins; firmware re-binds GPIO 14/42 before and after each `begin()`
 
 Relays:
 
@@ -128,7 +146,7 @@ Relays:
 
 ### 5.1 Motor record (NVS, not SD)
 
-Fixed-size struct, packed, versioned (`schema_version = 1`).
+Fixed-size struct, packed, versioned (`NVS_SCHEMA = 2`). A size/schema mismatch (e.g. an old v1 blob) starts empty.
 
 ```
 MotorRecord
@@ -138,6 +156,7 @@ MotorRecord
   uint8_t  channels[3]          // channel indices 0..7; unused = 0xFF
   uint8_t  is_ac                // 1 = AC, 0 = DC
   uint8_t  mains_hz             // 50 or 60; ignored if DC
+  float    rated_ac_v           // AC nameplate only; 0 for DC; not a trip input
   float    in_amps              // operating current
   float    stall_amps
   float    cooling_s
@@ -146,19 +165,23 @@ MotorRecord
   uint8_t  step_count           // 1..8
   float    step_k[8]            // multiplier of In
   float    step_t_s[8]          // trip time at that multiple
+  float    uv_volts             // DC undervoltage; 0 = disabled; 0 for AC
+  float    ov_volts             // DC overvoltage; 0 = disabled; 0 for AC
 ```
+
+Validation: AC requires `mains_hz` 50/60 and `rated_ac_v` in 0.1–1000. DC requires `uv_volts`, `ov_volts` ≥ 0 and ≤ 55, and `ov_volts > uv_volts` when both > 0. Cross-field values are zeroed on add/edit (AC stores no UV/OV; DC stores no rated AC).
 
 NVS namespace `mps`. Keys:
 
 - `motors` — blob of `MotorRecord[MAX_MOTORS]`
 - `auth_user`, `auth_pass` — dashboard login credentials
-- `magic` — schema marker
+- schema marker
 
-Corrupt or missing blob → empty motor list, Serial warning, do not invent motors. Protection and web still run.
+Corrupt, missing, or wrong-schema blob → empty motor list, Serial warning, do not invent motors. Protection and web still run.
 
 ### 5.2 Runtime (RAM only)
 
-Per channel: `zero_adc`, `last_rms`, `energy_a2s` (I²t accumulator), last sample ticks.
+Per channel: `zero_adc`, `last_rms`, `energy_a2s` (I²t accumulator), `v_zero`, `last_v`, `v_calibrated`, last sample ticks.
 
 Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type.
 
@@ -189,6 +212,7 @@ Calibration:
 - All 8 channels at boot (motors are still Stopped, relays OFF).
 - On-demand from the UI only if every motor is `Stopped` or `Fault`. Otherwise reject.
 - Each channel: N samples with no current expected; store mean ADC as `zero_adc`.
+- DC voltage zero: same window, with relays OFF the tap sits at ~0 V. Store mean AIN volts as `v_zero` and set `v_calibrated`. Calibration runs ADC and I²C outside the status mutex (channels copied out, zeros copied back).
 
 ### 6.2 Energy model
 
@@ -217,10 +241,17 @@ Trip `SENSOR_FAULT` immediately if, on an assigned channel:
 - ADC reading is stuck (unchanged across a full window within 1 LSB) while the motor is Running, or
 - Mean Vadc is outside `[0.05 V, 3.05 V]` (open/shorted divider), or
 - Computed |I_rms| is physically implausible (> 40 A on a 30 A sensor)
+- DC voltage path (Running DC only): the ADS1115 for that channel is missing / I²C fails, `|V_adc| > 4.0 V`, or `|V_bus| > 55 V`
 
 Same trip path as other faults (relays off, tone, log, cooling). Auto-restart still applies.
 
-### 6.5 State machine
+### 6.5 DC undervoltage / overvoltage
+
+DC only, after 250 ms of `Running` (relay just closed): `V_bus < uv_volts` when `uv_volts > 0` → `UNDERVOLT`; `V_bus > ov_volts` when `ov_volts > 0` → `OVERVOLT`. `0` disables that trip independently. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared.
+
+Trip order within one sample window: `SENSOR`, `STALL`, `OV`, `UV`, `I2T`.
+
+### 6.6 State machine
 
 ```
 Stopped --Start--> Running
@@ -232,11 +263,11 @@ Cooling --Reset--> Stopped     (cancel auto-restart, buzzer off)
 Fault   --Reset--> Stopped     (buzzer off)
 ```
 
-Start is rejected from Fault, Cooling, or if channels are not calibrated.
+Start is rejected from Fault, Cooling, if channels are not calibrated, or (DC) if the ADS1115 for that motor's channels is missing. Auto-restart re-checks the same ADS precondition.
 
 On trip, 3-phase de-energizes all three relays together.
 
-### 6.6 Fail-safe summary
+### 6.7 Fail-safe summary
 
 - Boot: all relays OFF before any other init
 - Protection must not depend on SD
@@ -258,8 +289,8 @@ Themed `/login` page (same dark dashboard theme). Successful POST sets an HttpOn
 
 Desktop-only UI (wide table layout, not mobile-first). Four operator pages plus Security, same dashboard for any client on the AP:
 
-1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), thermal load % (hottest phase), Start/Stop, Reset (enabled in Fault or Cooling). Poll `GET /api/status` about once per second.
-2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip).
+1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), live DC voltage (em dash for AC), thermal load % (hottest phase), last fault tag, Start/Stop, Reset (enabled in Fault or Cooling). A meta line shows ADS1115 ok/missing. Poll `GET /api/status` about once per second.
+2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip). AC shows mains Hz + rated AC voltage; DC shows optional UV/OV (0 = off).
 3. Edit / delete — same fields as add.
 4. Log — table or an "unavailable" banner if `sd_ok == false`. Export CSV, clear.
 5. Security — change dashboard username/password.
@@ -289,11 +320,11 @@ SPI (not SDIO), CS GPIO 10. RoboticsBD 3.3 V breakout, no CD pin. Presence = suc
 
 Mount failure: set `sd_ok = false`, Serial warning, never touch `File` objects, skip writes. Dashboard and protection continue.
 
-Log file `/faults.csv`. Header: `uptime_ms,motor,type,current_A`
+Log file `/faults.csv`. Header: `uptime_ms,motor,type,current_A,voltage_V`
 
-Types: `I2T`, `STALL`, `SENSOR_FAULT`.
+Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`.
 
-3-phase current-at-fault is the RMS of the phase that crossed the threshold.
+3-phase current-at-fault is the RMS of the phase that crossed the threshold. `voltage_V` is the DC bus voltage at the fault (0 for AC motors). An older 4-column CSV still parses.
 
 Clear log from UI truncates the file. Export is a download of the same CSV.
 
@@ -313,7 +344,8 @@ These were not named by the user; they are the natural Arduino-IDE match for the
 
 - Arduino-ESP32 3.x board package, board = "ESP32S3 Dev Module", PSRAM = "OPI PSRAM", Flash = 16 MB
 - `ESPAsyncWebServer` + `AsyncTCP` (ESP32Async / compatible Arduino-ESP32 3.x build)
-- Built-in: `WiFi`, `Preferences` (NVS), `SD`, `SPI`, `FS`, `esp32-hal-ledc`
+- `Adafruit ADS1X15` + `Adafruit BusIO` (DC voltage)
+- Built-in: `WiFi`, `Preferences` (NVS), `SD`, `SPI`, `FS`, `Wire`, `esp32-hal-ledc`
 
 If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32Async fork without changing the HTTP API.
 
@@ -324,6 +356,7 @@ If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32
 | SD missing/unformatted | Boot, protect, serve UI; log page = unavailable |
 | NVS corrupt | Empty motor list; Serial warning |
 | Sensor fault | Trip that motor |
+| ADS1115 missing (DC) | DC Start rejected; a missing half leaves its AC channels usable |
 | Auth missing/wrong | HTTP 401, no motor commands |
 | Insufficient free channels | Add-motor rejected |
 | Calibrate while a motor runs | Rejected |
@@ -342,6 +375,8 @@ If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32
 - Mobile-responsive UI
 - Cellular
 - Hardware schematic / PCB
+- AC voltage sensing (ZMPT101B) — descoped; AC uses a manual rated-voltage field only
+- Apparent power (`V × I`) display or logging
 - Git commit (user will request it)
 
 ## 15. Assumptions vs escalated questions
