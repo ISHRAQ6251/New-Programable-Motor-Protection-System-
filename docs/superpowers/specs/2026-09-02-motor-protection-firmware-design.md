@@ -1,7 +1,7 @@
 # ESP32-S3 Programmable Motor Protection Firmware — Design
 
-Date: 2026-09-02 (updated 2026-09-13 to fold in the DC-voltage / rated-AC extension)
-Status: Approved. v1 + DC voltage / AC rated-V field implemented in `MotorProtection/` (not compiled in this environment; committed). The focused delta spec is `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md`.
+Date: 2026-09-02 (updated 2026-09-13 for the DC-voltage / rated-AC extension, 2026-09-14 for the power display / logging extension)
+Status: Approved. v1 + DC voltage / AC rated-V field + power display implemented in `MotorProtection/` (not compiled in this environment; committed). Focused delta specs: `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` and `docs/superpowers/specs/2026-09-14-power-display-design.md`.
 Scope: ESP32-S3 firmware only. Sensors, relays, SD breakout, voltage taps, and buzzer are treated as already wired.
 
 ## 1. Purpose
@@ -64,7 +64,7 @@ Rules:
 - The protection task never mounts SD, never formats strings for HTTP, and never blocks on Wi-Fi.
 - Relays are driven only from the protection task (and from `setup()` fail-safe OFF before tasks start).
 - Web handlers enqueue commands (`START`, `STOP`, `RESET`, `CALIBRATE`, motor CRUD already applied to NVS then `RELOAD`).
-- Live dashboard reads a mutex-guarded snapshot (`rms[8]`, `volts[8]`, `energy`, `status`, `uptime`, `fault_count`, `thermal_pct`, `ads_ok[2]`, `v_calibrated[8]`, `last_fault`, `sd_ok`, `free_heap`).
+- Live dashboard reads a mutex-guarded snapshot (`rms[8]`, `volts[8]`, `energy`, `power`, `status`, `uptime`, `fault_count`, `thermal_pct`, `ads_ok[2]`, `v_calibrated[8]`, `last_fault`, `sd_ok`, `free_heap`).
 - Current ADC and ADS1115 are sampled **outside** the status mutex, then the mutex is re-taken to apply I²t / UV / OV / stall / sensor-fault. The mutex is never held across `analogRead` or I²C.
 
 ### 3.1 File split
@@ -183,7 +183,7 @@ Corrupt, missing, or wrong-schema blob → empty motor list, Serial warning, do 
 
 Per channel: `zero_adc`, `last_rms`, `energy_a2s` (I²t accumulator), `v_zero`, `last_v`, `v_calibrated`, last sample ticks.
 
-Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type.
+Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type, `power` (latest `W` or `VA`), `energy` (`Wh` / `VAh`, RAM only). Power/energy update once per protection pass, show `0.0` when not Running, and are never written to NVS. See `2026-09-14-power-display-design.md`.
 
 Dashboard thermal % for a motor is the max of its channels' `100 * E / E_trip`. For 3-phase that is the hottest phase.
 
@@ -289,7 +289,7 @@ Themed `/login` page (same dark dashboard theme). Successful POST sets an HttpOn
 
 Desktop-only UI (wide table layout, not mobile-first). Four operator pages plus Security, same dashboard for any client on the AP:
 
-1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), live DC voltage (em dash for AC), thermal load % (hottest phase), last fault tag, Start/Stop, Reset (enabled in Fault or Cooling). A meta line shows ADS1115 ok/missing. Poll `GET /api/status` about once per second.
+1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), live DC voltage (em dash for AC), power (true `W` for DC, apparent `VA` for AC) with session energy, thermal load % (hottest phase), last fault tag, Start/Stop, Reset (enabled in Fault or Cooling). A meta line shows ADS1115 ok/missing. Poll `GET /api/status` about once per second. See `2026-09-14-power-display-design.md`.
 2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip). AC shows mains Hz + rated AC voltage; DC shows optional UV/OV (0 = off).
 3. Edit / delete — same fields as add.
 4. Log — table or an "unavailable" banner if `sd_ok == false`. Export CSV, clear.
@@ -320,11 +320,11 @@ SPI (not SDIO), CS GPIO 10. RoboticsBD 3.3 V breakout, no CD pin. Presence = suc
 
 Mount failure: set `sd_ok = false`, Serial warning, never touch `File` objects, skip writes. Dashboard and protection continue.
 
-Log file `/faults.csv`. Header: `uptime_ms,motor,type,current_A,voltage_V`
+Log file `/faults.csv`. Header: `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA`
 
 Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`.
 
-3-phase current-at-fault is the RMS of the phase that crossed the threshold. `voltage_V` is the DC bus voltage at the fault (0 for AC motors). An older 4-column CSV still parses.
+3-phase current-at-fault is the RMS of the phase that crossed the threshold. `voltage_V` is the DC bus voltage at the fault (0 for AC motors). DC rows fill `power_W`, AC rows fill `power_VA`; the other stays blank. Older 4- or 5-column CSVs still parse.
 
 Clear log from UI truncates the file. Export is a download of the same CSV.
 
@@ -376,7 +376,6 @@ If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32
 - Cellular
 - Hardware schematic / PCB
 - AC voltage sensing (ZMPT101B) — descoped; AC uses a manual rated-voltage field only
-- Apparent power (`V × I`) display or logging
 - Git commit (user will request it)
 
 ## 15. Assumptions vs escalated questions

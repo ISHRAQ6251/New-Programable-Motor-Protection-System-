@@ -275,7 +275,7 @@ Desktop layout only (wide tables). Pages:
 
 | Page | Purpose |
 |---|---|
-| Dashboard | One row per motor: channels, name, status, uptime, fault count, live RMS, live DC V (em dash for AC), thermal %, Start / Stop / Reset |
+| Dashboard | One row per motor: channels, name, status, uptime, fault count, live RMS, live DC V (em dash for AC), power and session energy, thermal %, Start / Stop / Reset |
 | Add motor | Wizard: phase count first, then name and protection settings |
 | Edit | Change settings or delete (delete only from Stopped or Fault) |
 | Log | Fault CSV. Banner if no SD. Export / Clear when a card is mounted |
@@ -324,7 +324,7 @@ Stall might be set to 45 A so a locked rotor trips on the next ~20 ms window, wi
 ### 5.3 Start, stop, reset, calibrate
 
 - **Start** — only from Stopped, and only after zero calibration (done automatically at boot). DC Start also needs the ADS1115 for that motor's channels.
-- **Stop** — opens the relay(s), zeros thermal energy and live readings.
+- **Stop** — opens the relay(s), zeros thermal energy, power, session energy, and live readings.
 - **Reset** — from Fault or Cooling, same as Stop plus silence buzzer.
 - **Calibrate zeros** — re-measures current ADC zeros and DC voltage zeros on all 8 channels. Allowed only when every motor is Stopped or Fault. Relays stay off so voltage taps sit at 0 V.
 
@@ -333,11 +333,14 @@ Stall might be set to 45 A so a locked rotor trips on the next ~20 ms window, wi
 If a card is mounted: file `/faults.csv` on the card.
 
 ```
-uptime_ms,motor,type,current_A,voltage_V
-15230,Pump1,I2T,18.400,24.100
+uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA
+15230,Pump1,I2T,18.400,24.100,446.4,
+15231,Fan2,I2T,3.200,,,,312
 ```
 
-Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Export downloads the same CSV. Clear rewrites the header only. An existing v1 CSV without the voltage column still parses; new writes include voltage.
+DC rows fill `power_W`; AC rows fill `power_VA`; the other column is blank. Power is the value from the sample window that tripped.
+
+Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Export downloads the same CSV. Clear rewrites the header only. Older 4- or 5-column rows still parse; missing columns read as blank.
 
 No card: Log page shows a yellow banner. Motors still protect.
 
@@ -467,7 +470,24 @@ After 250 ms of Running (so the relay has closed and the tap is live):
 
 0 disables that trip. AC rated voltage is never compared.
 
-### 7.6 State machine
+### 7.6 Power display and its limits
+
+Every motor row shows power and session energy, computed from the current and voltage samples the protection task already takes. No extra sensor or sampling pass is added.
+
+| Supply | What is measured | What the row shows | Can we call it watts? |
+|---|---|---|---|
+| DC | Voltage (ADS1115) and current both measured | True power `P = V × I` in `W` | Yes — real watts |
+| AC 1-phase | Current measured; voltage is the nameplate number | Apparent power `~ S = V_rated × I_rms` in `VA` | No — VA, not W |
+| AC 3-phase | Current on all three phases; voltage is the nameplate line-to-line number | Apparent power `~ S = (V_rated / √3) × (I_a + I_b + I_c)` in `VA` | No — VA, not W |
+
+Key points:
+
+- **Power factor is unknown.** This hardware cannot measure the phase angle between voltage and current, so an AC reading is apparent power in volt-amperes, never true watts. Do not read `VA` as `W`.
+- **3-phase uses the sum of currents**, which equals `√3 × V_LL × I_avg` when the motor is balanced. If one phase is high, the sum still reflects total current rather than only the worst phase. Voltage is still assumed balanced.
+- **Energy** (`Wh` for DC, `VAh` for AC) accumulates only while the motor is Running, at roughly one sample per second. It shows `0.00` in Stopped, Fault, and Cooling, and resets on every Start and on reboot. Treat the label "since boot" as "since the last Start".
+- Values come from the same window that trips the motor, so the fault CSV records the power at the moment of the trip.
+
+### 7.7 State machine
 
 ```
 Stopped --Start--> Running
@@ -497,7 +517,9 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | RMS samples | ≥ 32 over ≥ 1 AC cycle |
 | Sensor |I| cap | 40 A |
 | UV/OV grace | 250 ms after DC Start |
-| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V` |
+| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA` |
+| Power | DC `W` (true); AC `VA` (apparent at rated V); PF unknown |
+| Session energy | RAM only, `Wh`/`VAh`, resets on Start and reboot |
 | NVS namespace | `mps` (motors blob, auth_user, auth_pass), schema 2 |
 
 ---

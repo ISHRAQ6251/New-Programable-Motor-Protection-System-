@@ -17,6 +17,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - **Sensor-fault** trip (stuck ADC, out-of-range Vadc, |I| > 40 A, or missing ADS1115 on a DC channel)
 - Live **DC voltage** with optional undervoltage / overvoltage trip (0 = that trip disabled)
 - **Rated AC voltage** is a manual nameplate field (not sensed, not used for trips)
+- **Power** display and fault-log columns: true `W` for DC, apparent `VA` at rated V for AC (PF unknown)
 - Desktop dashboard on SoftAP `MPS-505` / `mps50005`
 - Themed `/login` page + HttpOnly session cookie (default `mps` / `mps500`)
 - Motor config in NVS; protection still runs if the SD card is missing
@@ -143,7 +144,9 @@ LICENSE                   MIT
 | Sensor \|I\| cap | 40 A |
 | ADC | 12-bit, 11 dB, ADC1 only |
 | NVS namespace | `mps` (motors blob, auth_user, auth_pass) |
-| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V` |
+| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA` |
+| Power | DC true `W`; AC apparent `VA` at rated V (power factor unknown) |
+| Session energy | RAM only (`Wh`/`VAh`), resets on Start and reboot |
 | NVS schema | 2 (v1 motor blob is discarded on first boot of this build) |
 | Timestamps | `millis()` uptime (no NTP on SoftAP) |
 

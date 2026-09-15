@@ -17,7 +17,7 @@ University firmware project: replace a bimetallic thermal overload relay with an
 
 Hardware is treated as already wired. This repo is firmware only.
 
-Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2) and `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta).
+Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2), `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta), and `docs/superpowers/specs/2026-09-14-power-display-design.md` (power display / logging delta).
 
 License: MIT (`LICENSE`). Project overview: `README.md`. User-facing guide: `docs/USER_MANUAL.md`.
 
@@ -47,7 +47,7 @@ NVS namespace `mps`, blob of `MotorRecord[8]`. Never stored on SD.
 
 Motor record: name, phase count (1 or 3), assigned channel indices, AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, cooling time, auto-restart, per-channel relay polarity (default active-HIGH), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled).
 
-Runtime (RAM): per-channel zero ADC, last RMS, I²t energy, voltage zero and last V; per-motor status, uptime, fault count. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only.
+Runtime (RAM): per-channel zero ADC, last RMS, I²t energy, voltage zero and last V; per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
 
 NVS schema **2** (v1 blob is discarded on first boot of this build).
 
@@ -79,7 +79,7 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection never depe
 
 ## Current implementation status
 
-**v1 + DC voltage / AC rated-V field** in `MotorProtection/` (Arduino IDE sketch). Not compiled here (no Arduino-ESP32 toolchain in this environment).
+**v1 + DC voltage / AC rated-V field + power display** in `MotorProtection/` (Arduino IDE sketch). Not compiled here (no Arduino-ESP32 toolchain in this environment).
 
 | Module | File | Status |
 |---|---|---|
@@ -88,11 +88,11 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection never depe
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
 | Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean |
 | DC voltage ADS1115 | `voltage.cpp` | done — Adafruit ADS1X15, GAIN_ONE, off-mutex sample |
-| I²t / stall / UV / OV / sensor-fault | `protection.cpp` | done — dedicated FreeRTOS task, prio 5, core 1 |
+| I²t / stall / UV / OV / sensor-fault / power | `protection.cpp` | done — dedicated FreeRTOS task, prio 5, core 1; power from same pass, RAM-only energy |
 | NVS motor store | `motor_store.cpp` | done — blob + login credentials |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
-| SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing |
-| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, AC/DC form |
+| SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
+| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form |
 | Sketch entry | `MotorProtection.ino` | done |
 
 Boot Serial prints AP SSID/password/IP, dashboard login, and free heap. Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected. Bench heap after login ~207 kB.
@@ -133,7 +133,9 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 - ADC attenuation = 11 dB
 - Channel allocation = lowest free indices
 - Thermal % = `100 * E / E_trip` of the active step
-- Fault CSV path `/faults.csv` with `uptime_ms,motor,type,current_A,voltage_V`
+- Fault CSV path `/faults.csv` with `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA`; old 4/5-column rows still parse
+- Power/energy are RAM only in `MotorRuntime`; no NVS write, no schema bump (stays 2). Energy resets on Start and reboot
+- AC power is apparent `VA` at rated V; power factor is not measurable and must never be shown as `W`
 - I²C SDA/SCL = GPIO 14 / 42; ADS1115 data rate 250 SPS; UV/OV grace 250 ms after DC Start
 - NVS schema 2; flashing this build drops a v1 motor blob (size/schema mismatch → empty list)
 - Buzzer frequencies as named functions in the design spec (1 kHz fault, short chirps)
@@ -158,7 +160,7 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 
 - AP password `mps505` (6 chars) failed WPA2 association — must stay `mps50005` (≥ 8).
 - HTTP Basic Auth was replaced at user request; dashboard is `/login` + cookie `mps_sess` (HttpOnly, SameSite=Strict, 8 h). Dashboard login `mps` / `mps500` is **not** the AP password.
-- Holding the protection mutex across ADC sample windows starved the web snapshot — sample off-mutex.
+- Holding the protection mutex across ADC sample windows starved the web snapshot — sample off-mutex. Power reuses those same off-mutex samples; never add a second ADC/ADS pass.
 - Missing SD is a warning, not a boot failure.
 
 ## Next planned steps
@@ -168,5 +170,6 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 3. Inject current / short a sense pin to verify I²t, stall, and SENSOR_FAULT trips
 4. DC: apply voltage downstream of a closed relay; confirm live V and UV/OV trips (0 = disabled)
 5. Confirm missing-SD path (log page banner) and present-SD CSV write
+6. Power: DC known load vs bench meter; AC hand-check `V_rated × I_rms`; 3-phase current-unbalance check; trip CSV carries `power_W` / `power_VA`; energy reads `0.00` after reboot
 
-Last firmware: DC voltage + AC rated-V field on top of `3b7a424`, committed `12941fb`. Docs (`AGENTS.md`, `README.md`, `docs/USER_MANUAL.md`, both design specs) updated.
+Last firmware: power calc + dashboard display + fault-log power columns on top of DC-voltage build (`12941fb`). Docs (`AGENTS.md`, `README.md`, `docs/USER_MANUAL.md`, all design specs) updated.

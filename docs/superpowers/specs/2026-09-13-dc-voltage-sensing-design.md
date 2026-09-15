@@ -75,7 +75,7 @@ DC Start is rejected if either ADS1115 is missing. AC motors run without the ADS
 
 `FaultType` adds `FT_UNDERVOLT`, `FT_OVERVOLT`.
 
-Fault CSV: `uptime_ms,motor,type,current_A,voltage_V`. Types include `UNDERVOLT`, `OVERVOLT`.
+Fault CSV: `uptime_ms,motor,type,current_A,voltage_V`. Types include `UNDERVOLT`, `OVERVOLT`. (Superseded by the 2026-09-14 power spec, which appends `power_W,power_VA`.)
 
 ## 6. UI
 
@@ -84,7 +84,7 @@ Fault CSV: `uptime_ms,motor,type,current_A,voltage_V`. Types include `UNDERVOLT`
 - Calibrate button zeros current and DC voltage together (all motors Stopped/Fault)
 - Meta line includes ADS ok/missing
 
-Apparent power (`V × I`) is out of scope unless confirmed later.
+Apparent power (`V × I`) was out of scope here; it is now implemented — see `2026-09-14-power-display-design.md`.
 
 ## 7. Files
 
