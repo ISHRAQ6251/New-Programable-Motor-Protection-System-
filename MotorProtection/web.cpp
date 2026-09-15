@@ -185,7 +185,7 @@ static void sendOk(AsyncWebServerRequest *req) {
   sendJson(req, 200, "{\"ok\":1}");
 }
 
-static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m, char *err, size_t err_len, bool keep_channels) {
+static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m) {
   memset(m, 0, sizeof(*m));
   for (int p = 0; p < MAX_PHASES; p++) {
     m->channels[p] = CH_UNUSED;
@@ -218,9 +218,6 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m, char *err, s
     m->step_k[i] = paramF(req, kn, "0");
     m->step_t_s[i] = paramF(req, tn, "0");
   }
-  (void)keep_channels;
-  (void)err;
-  (void)err_len;
   return true;
 }
 
@@ -448,7 +445,7 @@ static void handleAdd(AsyncWebServerRequest *req) {
   }
   MotorRecord rec;
   char err[64];
-  fillFromReq(req, &rec, err, sizeof(err), false);
+  fillFromReq(req, &rec);
   const int slot = motorStoreAdd(&rec, err, sizeof(err));
   if (slot < 0) {
     sendErr(req, err);
@@ -468,7 +465,7 @@ static void handleEdit(AsyncWebServerRequest *req) {
   const int idx = paramI(req, "idx", "-1");
   MotorRecord rec;
   char err[64];
-  fillFromReq(req, &rec, err, sizeof(err), true);
+  fillFromReq(req, &rec);
   if (!motorStoreEdit(idx, &rec, err, sizeof(err))) {
     sendErr(req, err);
     return;
@@ -667,9 +664,9 @@ void webBegin() {
   s_server.on("/api/reset", HTTP_POST, [](AsyncWebServerRequest *req) { handleCmd(req, CMD_RESET); });
   s_server.on("/api/calibrate", HTTP_POST, handleCal);
   s_server.on("/api/alloc", HTTP_GET, handleAlloc);
-  s_server.on("/api/motor", HTTP_POST, handleAdd);
   s_server.on("/api/motor/edit", HTTP_POST, handleEdit);
   s_server.on("/api/motor/del", HTTP_POST, handleDel);
+  s_server.on("/api/motor/add", HTTP_POST, handleAdd);
   s_server.on("/api/log", HTTP_GET, handleLog);
   s_server.on("/api/log/export", HTTP_GET, handleLogExport);
   s_server.on("/api/log/clear", HTTP_POST, handleLogClear);

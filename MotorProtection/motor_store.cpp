@@ -321,6 +321,7 @@ bool motorStoreEdit(int idx, const MotorRecord *in, char *err, size_t err_len) {
     snprintf(err, err_len, "empty slot");
     return false;
   }
+  MotorRecord old = s_blob.motors[idx];
   rec.used = 1;
   rec.phase_count = s_blob.motors[idx].phase_count;
   memcpy(rec.channels, s_blob.motors[idx].channels, sizeof(rec.channels));
@@ -333,7 +334,14 @@ bool motorStoreEdit(int idx, const MotorRecord *in, char *err, size_t err_len) {
   }
   s_blob.motors[idx] = rec;
   unlock();
-  return motorStoreSave();
+  if (!motorStoreSave()) {
+    lock();
+    s_blob.motors[idx] = old;
+    unlock();
+    snprintf(err, err_len, "NVS save failed");
+    return false;
+  }
+  return true;
 }
 
 bool motorStoreDelete(int idx, MotorStatus status, char *err, size_t err_len) {
@@ -351,11 +359,19 @@ bool motorStoreDelete(int idx, MotorStatus status, char *err, size_t err_len) {
     snprintf(err, err_len, "empty slot");
     return false;
   }
+  MotorRecord old = s_blob.motors[idx];
   memset(&s_blob.motors[idx], 0, sizeof(MotorRecord));
   for (int p = 0; p < MAX_PHASES; p++) {
     s_blob.motors[idx].channels[p] = CH_UNUSED;
     s_blob.motors[idx].relay_active_high[p] = 1;
   }
   unlock();
-  return motorStoreSave();
+  if (!motorStoreSave()) {
+    lock();
+    s_blob.motors[idx] = old;
+    unlock();
+    snprintf(err, err_len, "NVS save failed");
+    return false;
+  }
+  return true;
 }

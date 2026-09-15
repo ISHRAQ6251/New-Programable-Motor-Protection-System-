@@ -146,7 +146,7 @@ input:disabled,select:disabled{opacity:.45}
     <form id="f-edit" hidden>
       <label>Channels</label><div id="e-ch" class="help"></div>
       <label for="e-name">Name</label>
-      <input id="e-name" maxlength="23" required>
+      <input id="e-name" name="name" maxlength="23" required>
       <label for="e-in">Operating current In (A)</label>
       <input id="e-in" type="number" step="0.01" min="0.01" required>
       <label for="e-ac">Supply</label>
@@ -356,7 +356,7 @@ $("f-add").onsubmit=ev=>{
     body+="&k"+i+"="+document.querySelector("[name=ak"+i+"]").value;
     body+="&t"+i+"="+document.querySelector("[name=at"+i+"]").value;
   }
-  post("/api/motor",body).then(j=>{
+  post("/api/motor/add",body).then(j=>{
     if(j.ok){flash("Motor added.","okmsg");location.hash="#dash";poll();}
     else flash(j.err||"add failed");
   });

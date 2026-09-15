@@ -162,6 +162,7 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 - HTTP Basic Auth was replaced at user request; dashboard is `/login` + cookie `mps_sess` (HttpOnly, SameSite=Strict, 8 h). Dashboard login `mps` / `mps500` is **not** the AP password.
 - Holding the protection mutex across ADC sample windows starved the web snapshot — sample off-mutex. Power reuses those same off-mutex samples; never add a second ADC/ADS pass.
 - Missing SD is a warning, not a boot failure.
+- Motor API routes must never be prefixes of one another. `/api/motor` collided with `/api/motor/edit` and `/api/motor/del`, so both edit and delete were dispatched to the add handler ("name required" on delete, duplicate motor on edit). Fixed by renaming add to `/api/motor/add` and registering the more specific routes first. Keep it that way; if you add another motor subroute, re-check for prefix overlaps.
 
 ## Next planned steps
 
