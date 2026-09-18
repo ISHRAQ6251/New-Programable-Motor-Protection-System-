@@ -465,7 +465,7 @@ void protectionTask(void *arg) {
       }
       xSemaphoreGive(s_mu);
       if (idle) {
-        voltageBegin();
+        voltageReprobe();
         sensingCalibrateAll(tmpch);
         voltageCalibrateAll(tmpch);
         xSemaphoreTake(s_mu, portMAX_DELAY);
