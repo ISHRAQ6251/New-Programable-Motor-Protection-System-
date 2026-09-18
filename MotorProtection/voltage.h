@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "config_limits.h"
+#include "types.h"          // ← THIS WAS MISSING — defines ChannelRuntime
 
 // Voltage sample result for one channel.
 struct VoltageSample {
@@ -28,6 +29,3 @@ void voltageCalibrateAll(ChannelRuntime *ch);
 
 // Sample one channel's DC voltage. Returns present=0 if the chip is missing.
 VoltageSample voltageSample(int ch, const ChannelRuntime *rt);
-
-// Copy which channels have valid voltage calibration (1) or not (0).
-void protectionCopyVcal(uint8_t out[MAX_CHANNELS]);
