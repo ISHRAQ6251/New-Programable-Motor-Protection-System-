@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Preferences.h>
+#include <math.h>
 #include <string.h>
 #include "motor_store.h"
 #include "config_limits.h"
@@ -34,6 +35,14 @@ static void clearMotors() {
   }
 }
 
+static void clearRecord(MotorRecord *m) {
+  memset(m, 0, sizeof(*m));
+  for (int p = 0; p < MAX_PHASES; p++) {
+    m->channels[p] = CH_UNUSED;
+    m->relay_active_high[p] = 1;
+  }
+}
+
 static bool channelTaken(uint8_t ch, int skip_idx) {
   for (int i = 0; i < MAX_MOTORS; i++) {
     if (i == skip_idx) {
@@ -52,7 +61,7 @@ static bool channelTaken(uint8_t ch, int skip_idx) {
   return false;
 }
 
-static bool validateRecord(const MotorRecord *m, char *err, size_t err_len) {
+static bool validateStructural(const MotorRecord *m, char *err, size_t err_len) {
   if (!m->name[0]) {
     snprintf(err, err_len, "name required");
     return false;
@@ -71,15 +80,15 @@ static bool validateRecord(const MotorRecord *m, char *err, size_t err_len) {
     snprintf(err, err_len, "phase_count must be 1 or 3");
     return false;
   }
-  if (m->in_amps <= 0.0f) {
+  if (!(m->in_amps > 0.0f) || !isfinite(m->in_amps)) {
     snprintf(err, err_len, "operating current must be > 0");
     return false;
   }
-  if (m->stall_amps <= 0.0f) {
+  if (!(m->stall_amps > 0.0f) || !isfinite(m->stall_amps)) {
     snprintf(err, err_len, "stall current must be > 0");
     return false;
   }
-  if (m->cooling_s <= 0.0f) {
+  if (!(m->cooling_s > 0.0f) || !isfinite(m->cooling_s)) {
     snprintf(err, err_len, "cooling time must be > 0");
     return false;
   }
@@ -88,12 +97,13 @@ static bool validateRecord(const MotorRecord *m, char *err, size_t err_len) {
       snprintf(err, err_len, "mains_hz must be 50 or 60");
       return false;
     }
-    if (m->rated_ac_v <= 0.0f || m->rated_ac_v > 1000.0f) {
+    if (!(m->rated_ac_v > 0.0f) || !isfinite(m->rated_ac_v) || m->rated_ac_v > 1000.0f) {
       snprintf(err, err_len, "rated AC voltage must be 0.1..1000");
       return false;
     }
   } else {
-    if (m->uv_volts < 0.0f || m->ov_volts < 0.0f) {
+    if (!(m->uv_volts >= 0.0f) || !isfinite(m->uv_volts) ||
+        !(m->ov_volts >= 0.0f) || !isfinite(m->ov_volts)) {
       snprintf(err, err_len, "UV/OV cannot be negative");
       return false;
     }
@@ -111,12 +121,82 @@ static bool validateRecord(const MotorRecord *m, char *err, size_t err_len) {
     return false;
   }
   for (int i = 0; i < m->step_count; i++) {
-    if (m->step_k[i] <= 0.0f || m->step_t_s[i] <= 0.0f) {
+    if (!(m->step_k[i] > 0.0f) || !(m->step_t_s[i] > 0.0f) ||
+        !isfinite(m->step_k[i]) || !isfinite(m->step_t_s[i])) {
       snprintf(err, err_len, "each step needs k > 0 and t > 0");
       return false;
     }
   }
   return true;
+}
+
+static bool validateRecord(const MotorRecord *m, char *err, size_t err_len) {
+  if (!validateStructural(m, err, err_len)) {
+    return false;
+  }
+  if (m->cooling_s > COOLING_MAX_S) {
+    snprintf(err, err_len, "cooling time must be at most 86400 s");
+    return false;
+  }
+  float max_curve_a = 0.0f;
+  for (int i = 0; i < m->step_count; i++) {
+    const float a = m->step_k[i] * m->in_amps;
+    if (a > max_curve_a) {
+      max_curve_a = a;
+    }
+  }
+  if (m->stall_amps <= m->in_amps || m->stall_amps <= max_curve_a) {
+    snprintf(err, err_len, "stall current must exceed In and every I2t step");
+    return false;
+  }
+  return true;
+}
+
+static void sanitizeLoadedBlob() {
+  bool used_ch[MAX_CHANNELS];
+  for (int i = 0; i < MAX_CHANNELS; i++) {
+    used_ch[i] = false;
+  }
+  for (int i = 0; i < MAX_MOTORS; i++) {
+    MotorRecord *m = &s_blob.motors[i];
+    bool ok = (m->used != 0);
+    if (ok) {
+      m->used = 1;
+      m->name[NAME_LEN - 1] = 0;
+      char err[48];
+      if (!validateStructural(m, err, sizeof(err))) {
+        ok = false;
+      } else {
+        for (int p = 0; p < m->phase_count; p++) {
+          const uint8_t c = m->channels[p];
+          if (c >= MAX_CHANNELS || used_ch[c]) {
+            ok = false;
+            break;
+          }
+          for (int q = 0; q < p; q++) {
+            if (m->channels[q] == c) {
+              ok = false;
+              break;
+            }
+          }
+          if (!ok) {
+            break;
+          }
+        }
+        if (ok) {
+          for (int p = 0; p < m->phase_count; p++) {
+            used_ch[m->channels[p]] = true;
+          }
+        }
+      }
+    }
+    if (!ok) {
+      if (m->used) {
+        Serial.printf("NVS: motor %d invalid — dropped\n", i);
+      }
+      clearRecord(m);
+    }
+  }
 }
 
 void motorStoreBegin() {
@@ -166,6 +246,7 @@ void motorStoreLoad() {
     return;
   }
   s_blob = tmp;
+  sanitizeLoadedBlob();
   unlock();
 }
 

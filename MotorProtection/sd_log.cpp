@@ -14,6 +14,7 @@ static const char *faultName(FaultType t) {
     case FT_SENSOR:    return "SENSOR_FAULT";
     case FT_UNDERVOLT: return "UNDERVOLT";
     case FT_OVERVOLT:  return "OVERVOLT";
+    case FT_NO_CURRENT: return "NO_CURRENT";
     default:           return "UNKNOWN";
   }
 }

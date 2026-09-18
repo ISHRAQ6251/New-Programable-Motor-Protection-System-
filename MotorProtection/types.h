@@ -16,7 +16,8 @@ enum FaultType : uint8_t {
   FT_STALL,
   FT_SENSOR,
   FT_UNDERVOLT,
-  FT_OVERVOLT
+  FT_OVERVOLT,
+  FT_NO_CURRENT
 };
 
 enum CmdType : uint8_t {
@@ -101,6 +102,8 @@ struct MotorRuntime {
   float       power;
   float       energy;
   uint8_t     power_is_w;
+  uint8_t     restart_count;
+  uint32_t    low_current_ms;
 };
 
 struct StatusSnapshot {

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <math.h>
 #include <string.h>
+#include <esp_task_wdt.h>
 #include "protection.h"
 #include "config_limits.h"
 #include "sensing.h"
@@ -97,6 +98,7 @@ static void zeroEnergy(int mi) {
   s_rt[mi].thermal_pct = 0;
   s_rt[mi].power = 0;
   s_rt[mi].energy = 0;
+  s_rt[mi].low_current_ms = 0;
 }
 
 static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
@@ -106,7 +108,12 @@ static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
   s_rt[mi].status = MST_COOLING;
   s_rt[mi].last_fault = ft;
   s_rt[mi].fault_count++;
-  s_rt[mi].cooling_deadline_ms = millis() + (uint32_t)(s_motors[mi].cooling_s * 1000.0f);
+  s_rt[mi].restart_count++;
+  float cool_s = s_motors[mi].cooling_s;
+  if (cool_s > COOLING_MAX_S) {
+    cool_s = COOLING_MAX_S;
+  }
+  s_rt[mi].cooling_deadline_ms = millis() + (uint32_t)(cool_s * 1000.0f);
   zeroEnergy(mi);
   pushLog(mi, ft, current_a, voltage_v, window_power, window_is_w);
   setTone(TONE_FAULT);
@@ -185,6 +192,7 @@ static void handleCmd(const Command &cmd) {
     s_rt[mi].status = MST_RUNNING;
     s_rt[mi].run_start_ms = millis();
     s_rt[mi].last_fault = FT_NONE;
+    s_rt[mi].restart_count = 0;
     motorRelaysOn(mi);
     setTone(TONE_STARTED);
   } else if (cmd.type == CMD_STOP) {
@@ -202,6 +210,7 @@ static void handleCmd(const Command &cmd) {
     motorRelaysOff(mi);
     s_rt[mi].status = MST_STOPPED;
     zeroEnergy(mi);
+    s_rt[mi].restart_count = 0;
     setTone(TONE_SILENCE);
   }
 }
@@ -223,7 +232,7 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
   if (*trip_ft != FT_NONE) {
     return;
   }
-  if (s.out_of_range || fabsf(s.rms) > SENSOR_I_CAP || (m->is_ac && s.stuck)) {
+  if (s.out_of_range || fabsf(s.rms) > SENSOR_I_CAP || s.stuck) {
     *trip_ft = FT_SENSOR;
     *trip_i = s.rms;
     if (vs) {
@@ -334,11 +343,58 @@ static void computePower(int mi, const SampleJob &job, float dt) {
   }
 }
 
+static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
+  const int mi = job->mi;
+  if (s_rt[mi].status != MST_RUNNING) {
+    return;
+  }
+  float hottest = 0;
+  FaultType trip_ft = FT_NONE;
+  float trip_i = 0;
+  float trip_v = 0;
+  for (int p = 0; p < job->phase_count; p++) {
+    const VoltageSample *vs = job->is_ac ? nullptr : &job->vres[p];
+    applySample(mi, p, job->res[p], vs, now, dt, &hottest, &trip_ft, &trip_i, &trip_v);
+  }
+  computePower(mi, *job, dt);
+  s_rt[mi].thermal_pct = hottest;
+
+  if ((uint32_t)(now - s_rt[mi].run_start_ms) >= CLEAN_RUN_MS) {
+    s_rt[mi].restart_count = 0;
+  }
+
+  float max_i = 0;
+  for (int p = 0; p < job->phase_count; p++) {
+    if (job->res[p].rms > max_i) {
+      max_i = job->res[p].rms;
+    }
+  }
+  if (max_i < NO_CURRENT_FRAC * s_motors[mi].in_amps) {
+    if (s_rt[mi].low_current_ms == 0) {
+      s_rt[mi].low_current_ms = now;
+    }
+    if (trip_ft == FT_NONE &&
+        (uint32_t)(now - s_rt[mi].low_current_ms) >= NO_CURRENT_MS) {
+      trip_ft = FT_NO_CURRENT;
+      trip_i = max_i;
+      if (!job->is_ac && job->vres[0].present) {
+        trip_v = job->vres[0].v_bus;
+      }
+    }
+  } else {
+    s_rt[mi].low_current_ms = 0;
+  }
+
+  if (trip_ft != FT_NONE) {
+    trip(mi, trip_ft, trip_i, trip_v);
+  }
+}
+
 static void processMotorCooling(int mi, uint32_t now) {
   MotorRecord *m = &s_motors[mi];
   MotorRuntime *rt = &s_rt[mi];
   if ((int32_t)(now - rt->cooling_deadline_ms) >= 0) {
-    if (m->auto_restart) {
+    if (m->auto_restart && rt->restart_count < MAX_RESTARTS) {
       if (!motorAdsReady(m)) {
         rt->status = MST_FAULT;
         setTone(TONE_FAULT);
@@ -357,10 +413,20 @@ static void processMotorCooling(int mi, uint32_t now) {
   }
 }
 
+static void protectionWdtBegin() {
+  esp_task_wdt_config_t cfg = {};
+  cfg.timeout_ms = WDT_TIMEOUT_MS;
+  cfg.idle_core_mask = 0;
+  cfg.trigger_panic = true;
+  if (esp_task_wdt_reconfigure(&cfg) != ESP_OK) {
+    esp_task_wdt_init(&cfg);
+  }
+}
+
 void protectionBegin() {
   s_mu = xSemaphoreCreateMutex();
   s_cmd_q = xQueueCreate(16, sizeof(Command));
-  s_log_q = xQueueCreate(8, sizeof(LogEvent));
+  s_log_q = xQueueCreate(16, sizeof(LogEvent));
   memset(s_motors, 0, sizeof(s_motors));
   memset(s_rt, 0, sizeof(s_rt));
   memset(s_ch, 0, sizeof(s_ch));
@@ -368,12 +434,14 @@ void protectionBegin() {
   sensingCalibrateAll(s_ch);
   voltageCalibrateAll(s_ch);
   s_calibrated = 1;
+  protectionWdtBegin();
 }
 
 void protectionTask(void *arg) {
   (void)arg;
   uint32_t last = millis();
   uint32_t heap_last = 0;
+  esp_task_wdt_add(nullptr);
   for (;;) {
     Command cmd;
     bool want_cal = false;
@@ -389,15 +457,21 @@ void protectionTask(void *arg) {
 
     if (want_cal) {
       ChannelRuntime tmpch[MAX_CHANNELS];
+      bool idle = false;
       xSemaphoreTake(s_mu, portMAX_DELAY);
-      memcpy(tmpch, s_ch, sizeof(tmpch));
+      idle = allIdleLocked();
+      if (idle) {
+        memcpy(tmpch, s_ch, sizeof(tmpch));
+      }
       xSemaphoreGive(s_mu);
-      sensingCalibrateAll(tmpch);
-      voltageCalibrateAll(tmpch);
-      xSemaphoreTake(s_mu, portMAX_DELAY);
-      memcpy(s_ch, tmpch, sizeof(tmpch));
-      s_calibrated = 1;
-      xSemaphoreGive(s_mu);
+      if (idle) {
+        sensingCalibrateAll(tmpch);
+        voltageCalibrateAll(tmpch);
+        xSemaphoreTake(s_mu, portMAX_DELAY);
+        memcpy(s_ch, tmpch, sizeof(tmpch));
+        s_calibrated = 1;
+        xSemaphoreGive(s_mu);
+      }
     }
 
     const uint32_t now = millis();
@@ -405,8 +479,8 @@ void protectionTask(void *arg) {
     if (dt < 0.001f) {
       dt = 0.001f;
     }
-    if (dt > 0.5f) {
-      dt = 0.5f;
+    if (dt > DT_MAX_S) {
+      dt = DT_MAX_S;
     }
     last = now;
 
@@ -435,16 +509,20 @@ void protectionTask(void *arg) {
     xSemaphoreGive(s_mu);
 
     for (int j = 0; j < nj; j++) {
-      for (int p = 0; p < jobs[j].phase_count; p++) {
-        const uint8_t c = jobs[j].channels[p];
+      SampleJob *job = &jobs[j];
+      for (int p = 0; p < job->phase_count; p++) {
+        const uint8_t c = job->channels[p];
         if (c >= MAX_CHANNELS) {
           continue;
         }
-        jobs[j].res[p] = sensingSample((int)c, &chcopy[c], jobs[j].is_ac, jobs[j].mains_hz);
-        if (!jobs[j].is_ac) {
-          jobs[j].vres[p] = voltageSample((int)c, &chcopy[c]);
+        job->res[p] = sensingSample((int)c, &chcopy[c], job->is_ac, job->mains_hz);
+        if (!job->is_ac) {
+          job->vres[p] = voltageSample((int)c, &chcopy[c]);
         }
       }
+      xSemaphoreTake(s_mu, portMAX_DELAY);
+      applyMotorSample(job, now, dt);
+      xSemaphoreGive(s_mu);
     }
 
     xSemaphoreTake(s_mu, portMAX_DELAY);
@@ -461,30 +539,8 @@ void protectionTask(void *arg) {
         s_rt[i].power = 0;
         s_rt[i].energy = 0;
         s_rt[i].power_is_w = s_motors[i].is_ac ? 0 : 1;
+        s_rt[i].low_current_ms = 0;
         continue;
-      }
-      SampleJob *job = nullptr;
-      for (int j = 0; j < nj; j++) {
-        if (jobs[j].mi == (uint8_t)i) {
-          job = &jobs[j];
-          break;
-        }
-      }
-      if (!job) {
-        continue;
-      }
-      float hottest = 0;
-      FaultType trip_ft = FT_NONE;
-      float trip_i = 0;
-      float trip_v = 0;
-      for (int p = 0; p < job->phase_count; p++) {
-        const VoltageSample *vs = job->is_ac ? nullptr : &job->vres[p];
-        applySample(i, p, job->res[p], vs, now, dt, &hottest, &trip_ft, &trip_i, &trip_v);
-      }
-      computePower(i, *job, dt);
-      s_rt[i].thermal_pct = hottest;
-      if (trip_ft != FT_NONE) {
-        trip(i, trip_ft, trip_i, trip_v);
       }
     }
     xSemaphoreGive(s_mu);
@@ -493,6 +549,7 @@ void protectionTask(void *arg) {
       heap_last = now;
       Serial.printf("heap protect=%u\n", (unsigned)ESP.getFreeHeap());
     }
+    esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(2));
   }
 }

@@ -24,6 +24,14 @@ static const float VBUS_CAP        = 55.0f;
 static const float VADC_ABS_MAX    = 4.0f;
 static const uint32_t UV_GRACE_MS  = 250;
 
+static const float NO_CURRENT_FRAC  = 0.05f;
+static const uint32_t NO_CURRENT_MS = 2000u;
+static const uint8_t MAX_RESTARTS   = 3;
+static const uint32_t CLEAN_RUN_MS  = 600000u;
+static const float COOLING_MAX_S    = 86400.0f;
+static const uint32_t WDT_TIMEOUT_MS = 5000u;
+static const float DT_MAX_S         = 5.0f;
+
 static const uint32_t NVS_MAGIC   = 0x4D505331u;
 static const uint16_t NVS_SCHEMA  = 2;
 
