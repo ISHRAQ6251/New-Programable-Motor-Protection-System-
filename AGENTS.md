@@ -8,8 +8,9 @@ University firmware project: replace a bimetallic thermal overload relay with an
 
 - Up to 8 channels = 8 ACS712-30A sensors + 8 relays + 8 DC voltage taps (2× ADS1115)
 - 1-phase motor = 1 channel; 3-phase motor = 3 linked channels, one dashboard row
-- Classic I²t energy model, independent stall trip, sensor-fault trip
+- Classic I²t energy model, independent stall trip, sensor-fault trip, `NO_CURRENT`
 - Live DC voltage (ADS1115) with optional UV/OV trip; AC rated voltage is a manual NVS field only
+- Power: DC true `W`; AC apparent `VA` at rated V; energy RAM-only
 - Desktop web dashboard on a fixed SoftAP (`MPS-505` / `mps50005`)
 - Themed `/login` page + HttpOnly session cookie (`mps` / `mps500` default)
 - Motor config in NVS; SD card used only for fault logs
@@ -17,7 +18,7 @@ University firmware project: replace a bimetallic thermal overload relay with an
 
 Hardware is treated as already wired. This repo is firmware only.
 
-Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2), `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta), and `docs/superpowers/specs/2026-09-14-power-display-design.md` (power display / logging delta).
+Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2), `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta), `docs/superpowers/specs/2026-09-14-power-display-design.md` (power display / logging). Roadmap: `docs/ROADMAP.md` (OLED + rotary encoder, not in this build). I²C bench: `docs/I2C_TROUBLESHOOTING.md`.
 
 License: MIT (`LICENSE`). Project overview: `README.md`. User-facing guide: `docs/USER_MANUAL.md`.
 
@@ -33,9 +34,9 @@ Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0 Serial).
 | Relay CH0–CH7 | 15, 16, 17, 18, 38, 39, 40, 41 | Active-HIGH default, OFF=LOW |
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 | SPI, 3.3 V breakout, not SDIO |
 | Buzzer | 21 | Passive, LEDC PWM |
-| I²C SDA / SCL | 14 / 42 | Explicit `Wire.begin(14, 42)` — not default 8/9 |
+| I²C SDA / SCL | **14 / 42** | `Wire.begin(14, 42)` once via `i2cInitOnce()` — **not** default 8/9 |
 
-DC voltage: 2× ADS1115 over that I²C bus. 0x48 (ADDR→GND) = CH0–3 AIN0–3; 0x49 (ADDR→VDD) = CH4–7 AIN0–3. Gain `GAIN_ONE` (±4.096 V). Divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~3.13 V. Tap is each motor **terminal downstream of its relay**, not the shared bus.
+DC voltage: 2× ADS1115 over that I²C bus. **0x48** (ADDR→GND) = CH0–3 AIN0–3; **0x49** (ADDR→VDD) = CH4–7 AIN0–3. Gain `GAIN_ONE` (±4.096 V). Divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~3.13 V. Tap is each motor **terminal downstream of its relay**, not the shared bus.
 
 Analog current: ACS712-30A (66 mV/A) → 10k/15k divider (×0.6) → ~39.6 mV/A at the ADC. Zero-current and DC zero-voltage are **calibrated**, never assumed.
 
@@ -81,29 +82,38 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds
 
 ## Current implementation status
 
-**v1 + DC voltage / AC rated-V field + power display** in `MotorProtection/` (Arduino IDE sketch). Not compiled here (no Arduino-ESP32 toolchain in this environment).
+**v2** in `MotorProtection/` (Arduino IDE sketch). Not compiled here (no Arduino-ESP32 toolchain in this environment).
 
 | Module | File | Status |
 |---|---|---|
-| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 2, UV/OV + rated AC |
-| Relays fail-safe | `relays.cpp` | done — OFF in `setup()` before Wi-Fi |
+| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 2, UV/OV + rated AC, VoltageSample |
+| Relays fail-safe | `relays.cpp` | done — OFF in `setup()` before Wi-Fi; polarity printed at de-energize |
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
-| Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean |
-| DC voltage ADS1115 | `voltage.cpp` | done — Adafruit ADS1X15, GAIN_ONE, off-mutex sample; boot+Calibrate I²C scan 0x03–0x77 and per-chip `endTransmission` code |
-| I²t / stall / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — dedicated FreeRTOS task, prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; Calibrate re-runs `voltageBegin()` off-mutex |
-| NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes corrupt records; stall must exceed In and every I²t step; cooling ≤ 86400 s |
+| Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean; stuck-ADC Serial |
+| DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 20 ms conversion timeout |
+| I²t / stall / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; Calibrate calls `voltageReprobe()` off-mutex |
+| NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes; stall must exceed In/steps; cooling ≤ 86400 s; AP-password auth_pass restored to `mps500` |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
-| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form |
+| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form; `s_json` 8192 B; `/api/motor/add` |
 | Sketch entry | `MotorProtection.ino` | done |
 
-Boot Serial prints AP SSID/password/IP, dashboard login, and free heap. Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected. Bench heap after login ~207 kB.
+Boot Serial prints AP SSID/password/IP, dashboard login (`mps` / `mps500`, **not** AP pass), and free heap (`HEAP:`). Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected.
 
-Protection samples current ADC and ADS1115 **outside** the status mutex (copy channel zeros, sample, then re-lock to apply I²t / UV / OV). Calibrate copies channels out, re-runs `voltageBegin()` (I²C scan + probe), then ADC + ADS zeros, copies zeros back — never holds the mutex across `analogRead` or I²C. Channel map is fixed: CH0–3 always 0x48, CH4–7 always 0x49, regardless of which physical module is plugged in where. Adafruit BusIO's `ads.begin()` calls `Wire.begin()` with no pins; firmware re-binds `Wire.begin(14, 42)` before and after each `begin()`. `loop()` prints `diag: ads_ok=[…] vcal=[…]` at most every 5 s when a chip or channel zero is not ready. Buzzer uses Arduino-ESP32 3.x LEDC: `ledcAttach(pin,freq,res)`, `ledcWrite(pin,duty)`, `ledcChangeFrequency(PIN_BUZZER, freq, 10)` (3-arg; 2-arg does not compile on 3.x).
+Protection samples current ADC and ADS1115 **outside** the status mutex (copy channel zeros, sample, then re-lock to apply I²t / UV / OV). Calibrate copies channels out, calls `voltageReprobe()` (scan + probe, no `Wire.end()`), then ADC + ADS zeros, copies zeros back. Channel map is fixed: CH0–3 always 0x48, CH4–7 always 0x49. Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins; firmware re-binds `Wire.begin(14, 42)` after each `begin()` and never calls `Wire.end()`. `loop()` prints `I2C: diag ads_ok=[…] vcal=[…]` at most every 5 s when a chip or channel zero is not ready. Buzzer uses Arduino-ESP32 3.x LEDC: `ledcAttach(pin,freq,res)`, `ledcWrite(pin,duty)`, `ledcChangeFrequency(PIN_BUZZER, freq, 10)` (3-arg).
 
 Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**, Core Debug Level **Debug**. Libraries: ESPAsyncWebServer + AsyncTCP (ESP32Async forks), Adafruit ADS1X15 + Adafruit BusIO.
 
-User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MANUAL.md`.
+User-facing guide: `docs/USER_MANUAL.md`.
+
+## File structure
+
+```
+MotorProtection/voltage.cpp   i2cInitOnce, voltageBegin, voltageReprobe, sample
+MotorProtection/voltage.h     VoltageSample, voltageReprobe, types.h include
+MotorProtection/web.cpp       /api/motor/add after /edit and /del; s_json 8192
+MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
+```
 
 ## Open questions and assumptions
 
@@ -125,11 +135,12 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 - Board ESP32-S3-N16R8
 - Delete motor only from Stopped/Fault
 - Timestamps = `millis()` uptime (no NTP)
+- AC voltage sensing (ZMPT101B) descoped
 
 ### Assumptions made unilaterally (not safety-relevant; change if you object)
 
 - Arduino-ESP32 3.x + ESPAsyncWebServer + AsyncTCP
-- NVS namespace `mps`, single blob key `motors`
+- NVS namespace `mps`, single blob key `motors`; auth keys `auth_user` / `auth_pass`
 - RMS sample count = 32 minimum
 - Sensor-fault |I| cap = 40 A
 - ADC attenuation = 11 dB
@@ -147,6 +158,7 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 - Security page exists to change dashboard login credentials (invalidates session)
 - Core assignment: Wi-Fi on core 0, protection + loop on core 1
 - `MPS_TEST_HOOKS` compile flag is optional and not required for v1
+- Future OLED SSD1306 at 0x3C and KY-040 encoder are planned only (`docs/ROADMAP.md`); do not implement without asking
 
 ### Escalated, then closed
 
@@ -155,27 +167,32 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 - AP credentials changed from MAC-derived to `MPS-505` / `mps50005` (was `mps505`, too short for WPA2)
 - AC voltage sensing (ZMPT101B) considered and descoped — AC uses a manual rated-voltage field only; do not re-open without asking
 
-### Still open (none blocking v1)
+### Still open (none blocking v2)
 
 - Exact Arduino IDE board-menu checkboxes beyond Flash 16 MB / OPI PSRAM (USB CDC on boot, etc.) — documented as Dev Module defaults in `docs/USER_MANUAL.md`
-- Physical SD card on first bench test — firmware treats missing card as valid (`SD: mount failed — fault log unavailable`)
+- Physical SD card on first bench test — firmware treats missing card as valid
+- OLED + rotary encoder (`docs/ROADMAP.md`) — not started
 
 ## Bench notes (do not regress)
 
 - AP password `mps505` (6 chars) failed WPA2 association — must stay `mps50005` (≥ 8).
 - HTTP Basic Auth was replaced at user request; dashboard is `/login` + cookie `mps_sess` (HttpOnly, SameSite=Strict, 8 h). Dashboard login `mps` / `mps500` is **not** the AP password.
 - Holding the protection mutex across ADC sample windows starved the web snapshot — sample off-mutex. Power reuses those same off-mutex samples; never add a second ADC/ADS pass.
-- ADS1115 `s_ok[]` is no longer boot-only. Calibrate re-runs `voltageBegin()` so an ADDR-pin fix is picked up without a power cycle. CH0–3 stay 0x48 and CH4–7 stay 0x49; a swapped ADDR pin shows as the wrong chip missing, not as swapped readings.
+- **Never call `Wire.end()`.** It tears down the driver; a later `begin()` does not fully recover the bus. `i2cInitOnce()` runs once; Calibrate uses `voltageReprobe()`. After `ads.begin()`, re-bind `Wire.begin(14, 42)` because Adafruit BusIO may call `Wire.begin()` with no pins.
+- **SDA/SCL swap:** a swapped pair scans as `(none)` or timeouts (`err=5`). Firmware cannot auto-detect a swap. Confirm GPIO 14 = SDA and 42 = SCL on the ADS modules (not ESP32 default 8/9).
+- ADS1115 `s_ok[]` is no longer boot-only. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a power cycle. CH0–3 stay 0x48 and CH4–7 stay 0x49; a swapped ADDR pin shows as the wrong chip missing, not as swapped readings.
 - Missing SD is a warning, not a boot failure.
-- Motor API routes must never be prefixes of one another. `/api/motor` collided with `/api/motor/edit` and `/api/motor/del`, so both edit and delete were dispatched to the add handler ("name required" on delete, duplicate motor on edit). Fixed by renaming add to `/api/motor/add` and registering the more specific routes first. Keep it that way; if you add another motor subroute, re-check for prefix overlaps.
+- Motor API routes must never be prefixes of one another. `/api/motor` collided with `/api/motor/edit` and `/api/motor/del`. Add is `/api/motor/add`; register `/edit` and `/del` first.
+- If Serial ever printed `dash pass: mps50005`, that was AP password leaking into NVS `auth_pass`. Load now restores `mps500` when `auth_pass` equals `AP_PASS`.
 
 ## Next planned steps
 
-1. Flash this build — confirm `/login` then dashboard (no browser Basic Auth prompt)
-2. Confirm Serial `ADS1115 0x48/0x49: ok` (or `not found` if unpopulated); DC Start disabled without the chip for that motor
+1. Flash this build — confirm `/login` then dashboard (no browser Basic Auth prompt); Serial `dash pass: mps500`
+2. Confirm Serial `I2C: initialized SDA=14 SCL=42` then `ADS: 0x48/0x49 ok` (or `not found` if unpopulated); DC Start disabled without the chip for that motor
 3. Inject current / short a sense pin to verify I²t, stall, SENSOR_FAULT, and NO_CURRENT trips
 4. DC: apply voltage downstream of a closed relay; confirm live V and UV/OV trips (0 = disabled)
 5. Confirm missing-SD path (log page banner) and present-SD CSV write
 6. Power: DC known load vs bench meter; AC hand-check `V_rated × I_rms`; 3-phase current-unbalance check; trip CSV carries `power_W` / `power_VA`; energy reads `0.00` after reboot
+7. Later (not this build): OLED SSD1306 0x3C + KY-040 encoder per `docs/ROADMAP.md`
 
-Last firmware: ADS1115 re-probe on Calibrate + I²C scan/err labels + 5 s `diag:` heartbeat when a chip or vcal is missing (2026-09-18), on top of divider 150 kΩ / 10 kΩ (`b5e3754`) and safety review (`912a982`).
+Last firmware: I²C `i2cInitOnce` / `voltageReprobe` / no `Wire.end()` (origin `455debf` and follow-up quality), on top of Calibrate re-probe (`2f53bc7`), divider 150 kΩ / 10 kΩ (`b5e3754`), and safety review (`912a982`).

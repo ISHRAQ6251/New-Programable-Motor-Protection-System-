@@ -23,13 +23,14 @@ void sdLogBegin() {
   s_ok = false;
   SPI.begin(PIN_SD_SCK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
   if (!SD.begin(PIN_SD_CS, SPI, 4000000)) {
-    Serial.println("SD: mount failed — fault log unavailable");
+    Serial.println("SD: mount failed — card missing, 5 V on a 3.3 V breakout, or CS/SPI wiring");
+    Serial.println("SD: fault log unavailable; protection still runs");
     return;
   }
   if (!SD.exists(FAULT_LOG_PATH)) {
     File f = SD.open(FAULT_LOG_PATH, FILE_WRITE);
     if (!f) {
-      Serial.println("SD: cannot create faults.csv");
+      Serial.println("SD: card mounted but cannot create /faults.csv (read-only or full?)");
       return;
     }
     f.println("uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA");
@@ -49,7 +50,7 @@ void sdLogAppend(const LogEvent *ev) {
   }
   File f = SD.open(FAULT_LOG_PATH, FILE_APPEND);
   if (!f) {
-    Serial.println("SD: append failed");
+    Serial.println("SD: append failed — card removed or filesystem error");
     s_ok = false;
     return;
   }

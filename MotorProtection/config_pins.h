@@ -20,12 +20,18 @@ static const int PIN_SD_CS   = 10;
 // Passive buzzer, LEDC PWM.
 static const int PIN_BUZZER = 21;
 
-// I2C for 2x ADS1115 DC voltage ADCs. Must not use ESP32 default SDA/SCL
-// (GPIO 8/9) — those are current-sense CH6/CH7.
-static const int PIN_I2C_SDA = 14;
-static const int PIN_I2C_SCL = 42;
-static const uint8_t ADS1115_ADDR_A = 0x48;  // ADDR -> GND, CH0-3 = AIN0-3
-static const uint8_t ADS1115_ADDR_B = 0x49;  // ADDR -> VDD, CH4-7 = AIN0-3
+#ifndef PIN_I2C_SDA
+#define PIN_I2C_SDA 14
+#endif
+#ifndef PIN_I2C_SCL
+#define PIN_I2C_SCL 42
+#endif
+#ifndef ADS1115_ADDR_A
+#define ADS1115_ADDR_A 0x48
+#endif
+#ifndef ADS1115_ADDR_B
+#define ADS1115_ADDR_B 0x49
+#endif
 
 // Analog path: ACS712-30A 66 mV/A, 10k/15k divider (x0.6) => 39.6 mV/A at ADC.
 static const float ACS712_MV_PER_AMP = 66.0f;

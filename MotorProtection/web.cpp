@@ -13,7 +13,7 @@
 #include "config_limits.h"
 
 static AsyncWebServer s_server(80);
-static char s_json[20480];
+static char s_json[8192];
 static SemaphoreHandle_t s_json_mu;
 static char s_sess[33];
 static uint32_t s_sess_exp_ms;
@@ -115,7 +115,7 @@ static bool auth(AsyncWebServerRequest *req) {
 }
 
 static void logHeap(const char *tag) {
-  Serial.printf("heap web %s=%u\n", tag, (unsigned)ESP.getFreeHeap());
+  Serial.printf("HEAP: web %s=%u\n", tag, (unsigned)ESP.getFreeHeap());
 }
 
 static void copyParam(AsyncWebServerRequest *req, const char *name, char *out, size_t out_len, const char *def = "") {

@@ -117,6 +117,18 @@ static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
   zeroEnergy(mi);
   pushLog(mi, ft, current_a, voltage_v, window_power, window_is_w);
   setTone(TONE_FAULT);
+  const char *ftn = "UNKNOWN";
+  switch (ft) {
+    case FT_I2T:        ftn = "I2T"; break;
+    case FT_STALL:      ftn = "STALL"; break;
+    case FT_SENSOR:     ftn = "SENSOR_FAULT"; break;
+    case FT_UNDERVOLT:  ftn = "UNDERVOLT"; break;
+    case FT_OVERVOLT:   ftn = "OVERVOLT"; break;
+    case FT_NO_CURRENT: ftn = "NO_CURRENT"; break;
+    default: break;
+  }
+  Serial.printf("TRIP: motor=%s type=%s I=%.3f A V=%.3f\n",
+                s_motors[mi].name, ftn, (double)current_a, (double)voltage_v);
 }
 
 static bool motorAdsReady(const MotorRecord *m) {
@@ -465,6 +477,7 @@ void protectionTask(void *arg) {
       }
       xSemaphoreGive(s_mu);
       if (idle) {
+        Serial.println("CAL: re-probe ADS1115 then zeros");
         voltageReprobe();
         sensingCalibrateAll(tmpch);
         voltageCalibrateAll(tmpch);
@@ -548,7 +561,7 @@ void protectionTask(void *arg) {
 
     if (now - heap_last >= 1000) {
       heap_last = now;
-      Serial.printf("heap protect=%u\n", (unsigned)ESP.getFreeHeap());
+      Serial.printf("HEAP: protect=%u\n", (unsigned)ESP.getFreeHeap());
     }
     esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(2));

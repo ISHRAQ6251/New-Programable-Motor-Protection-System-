@@ -223,6 +223,14 @@ void motorStoreLoad() {
     strncpy(s_pass, DEFAULT_AUTH_PASS, AUTH_PASS_LEN - 1);
     s_pass[AUTH_PASS_LEN - 1] = 0;
   }
+  s_user[AUTH_USER_LEN - 1] = 0;
+  s_pass[AUTH_PASS_LEN - 1] = 0;
+  if (strcmp(s_pass, AP_PASS) == 0) {
+    strncpy(s_pass, DEFAULT_AUTH_PASS, AUTH_PASS_LEN - 1);
+    s_pass[AUTH_PASS_LEN - 1] = 0;
+    s_prefs.putString(NVS_KEY_PASS, s_pass);
+    Serial.println("NVS: auth_pass was AP password — restored dashboard default");
+  }
 
   const size_t n = s_prefs.getBytesLength(NVS_KEY_BLOB);
   if (n != sizeof(MotorBlob)) {

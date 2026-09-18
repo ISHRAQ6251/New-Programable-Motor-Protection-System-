@@ -145,7 +145,7 @@ ESP32 ADC1 is fully used by current sensing. DC voltage uses two ADS1115 16-bit 
 | ADS #1 | GND | 0x48 | CH0–CH3 → AIN0–AIN3 |
 | ADS #2 | VDD | 0x49 | CH4–CH7 → AIN0–AIN3 |
 
-Firmware calls `Wire.begin(14, 42)` before and after `ads.begin()` because Adafruit BusIO's `begin()` would otherwise snap Wire back to GPIO 8/9 (current-sense CH6/CH7). Gain is set to **GAIN_ONE** (±4.096 V), not the library default. Both ADS1115 modules share that bus; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them.
+Firmware calls `i2cInitOnce()` once (`Wire.begin(14, 42)`). Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins, so the sketch re-binds 14/42 after each `begin()`. **Never `Wire.end()`** — it destroys the driver (see `docs/I2C_TROUBLESHOOTING.md`). Gain is **GAIN_ONE** (±4.096 V). Both ADS1115 modules share that bus; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a reboot.
 
 Each voltage divider taps the **motor terminal downstream of that channel's relay**, not the shared DC bus:
 
@@ -232,22 +232,26 @@ If compile fails on Arduino-ESP32 3.x, use the maintained **ESP32Async** forks o
 On every reset the firmware prints something like:
 
 ```
+I2C: initialized SDA=14 SCL=42 clock=400000Hz
+I2C: scan 0x48
+I2C: expected 0x48 (ADDR->GND)=CH0-3, 0x49 (ADDR->VDD)=CH4-7
+ADS: 0x48 ok GAIN_ONE 250SPS
+ADS: 0x49 not found (I2C err=2 NACK addr)
 NVS: no motor blob — starting empty
-ADS1115 0x48: ok GAIN_ONE 250SPS
-ADS1115 0x49: not found
-SD: mount failed — fault log unavailable
+SD: mount failed — card missing, 5 V on a 3.3 V breakout, or CS/SPI wiring
+SD: fault log unavailable; protection still runs
 ---- MPS-505 boot ----
 mode: SoftAP
 SSID: MPS-505
-pass: mps50005
+AP pass: mps50005
 IP:   192.168.4.1
 dash user: mps
 dash pass: mps500
 ----------------------
-heap boot=...
+HEAP: boot=...
 ```
 
-`SD: mount failed` is normal if no card is inserted. Protection still runs. `ADS1115 0x48/0x49: not found` is normal if that chip is unpopulated; DC motors on those channels cannot Start.
+`SD: mount failed` is normal if no card is inserted. Protection still runs. `ADS: 0x48/0x49 not found` is normal if that chip is unpopulated; DC motors on those channels cannot Start. Dashboard login is **`mps` / `mps500`**, not the AP password. If Serial ever printed `dash pass: mps50005`, reflash this tree — load restores the dashboard default.
 
 ### 4.2 Join the access point
 
@@ -369,8 +373,8 @@ types.h                 MotorRecord, commands, statuses, snapshots
 relays.cpp              Polarity-aware coil drive
 buzzer.cpp              Non-blocking LEDC tone sequencer
 sensing.cpp             Current ADC calibrate, true RMS (AC) or mean |i| (DC)
-voltage.cpp             2× ADS1115 DC voltage, GAIN_ONE, calibrate
-protection.cpp          I²t / stall / UV / OV / sensor-fault (FreeRTOS task)
+voltage.cpp / voltage.h 2× ADS1115, i2cInitOnce, voltageReprobe, GAIN_ONE
+protection.cpp          I²t / stall / UV / OV / sensor-fault / NO_CURRENT / power
 motor_store.cpp         NVS blob + login credentials
 net_ap.cpp              SoftAP MPS-505 / mps50005
 sd_log.cpp              Optional /faults.csv
@@ -380,7 +384,7 @@ web.cpp / web_html.h    Async HTTP, session login, dashboard HTML
 Boot order in `setup()` (order matters for fail-safe):
 
 1. Relays: all pins OUTPUT LOW
-2. Buzzer, current ADC, ADS1115 (`Wire.begin(14, 42)`)
+2. Buzzer, current ADC, ADS1115 (`i2cInitOnce()` → GPIO 14/42)
 3. NVS load (empty list if missing/corrupt/schema mismatch — never invents motors)
 4. De-energize relays using stored polarities
 5. Try SD mount (failure is a warning only)
@@ -541,8 +545,9 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Log page yellow banner | No SD or 5 V fed to a 3.3 V breakout | Insert a FAT-formatted card on 3.3 V SPI; protection is unaffected |
 | Compile error `ledcChangeFrequency` | Mixing ESP32 core 2.x vs 3.x | Use Arduino-ESP32 3.x and `ledcAttach` / 3-arg `ledcChangeFrequency` |
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
-| DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, or I²C on GPIO 8/9 | Serial `I2C scan` then `ADS1115 0x48/0x49` with `I2C err=`. CH0–3 are always 0x48 (ADDR→GND), CH4–7 always 0x49 (ADDR→VDD) — swapping the modules does not swap channels. Press Calibrate to re-probe; no reboot |
-| `diag: ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / missing pull-ups |
+| DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 always 0x48, CH4–7 always 0x49. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
+| `I2C: diag ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / SDA-SCL swap / missing pull-ups |
+| Login page rejects mps / mps500 after a flash that printed `dash pass: mps50005` | NVS `auth_pass` was the AP password | This build restores `mps500` when `auth_pass` equals the AP password |
 | Live DC V stuck at 0 with motor running | Tap is upstream of the relay, or not calibrated | Tap **downstream** of the relay. Calibrate with motors Stopped |
 | Live DC V reads ~19 % high vs a meter | Firmware still using the old 180 k / 10 k scale | Flash this tree (150 k / 10 k, scale 16) and recalibrate zeros |
 | Edit rejected "stall current must exceed In…" | Stall ≤ In or ≤ a protection-step current | Raise stall above In and every `k × In` |

@@ -74,7 +74,7 @@ void setup() {
   char pass[AUTH_PASS_LEN];
   motorStoreAuthGet(user, pass);
   netApPrintBanner(user, pass);
-  Serial.printf("heap boot=%u\n", (unsigned)ESP.getFreeHeap());
+  Serial.printf("HEAP: boot=%u\n", (unsigned)ESP.getFreeHeap());
 
   tonePowerUp();
 }
@@ -108,7 +108,7 @@ void loop() {
       }
     }
     if (!ready) {
-      Serial.printf("diag: ads_ok=[%u,%u] vcal=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
+      Serial.printf("I2C: diag ads_ok=[%u,%u] vcal=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
                     (unsigned)a0, (unsigned)a1,
                     (unsigned)vcal[0], (unsigned)vcal[1],
                     (unsigned)vcal[2], (unsigned)vcal[3],

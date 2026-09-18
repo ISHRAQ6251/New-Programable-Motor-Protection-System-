@@ -31,6 +31,7 @@ void sensingCalibrateAll(ChannelRuntime *ch) {
     ch[i].energy_a2s = 0;
     ch[i].last_ms = 0;
     ch[i].calibrated = 1;
+    Serial.printf("CAL: CH%d i_zero=%.1f mV\n", i, (double)ch[i].zero_mv);
   }
 }
 
@@ -72,6 +73,9 @@ SampleResult sensingSample(int ch, const ChannelRuntime *rt, uint8_t is_ac, uint
 
   if (n <= 1) {
     r.stuck = 1;
+  }
+  if (r.stuck) {
+    Serial.printf("SENS: CH%d stuck ADC raw=%d n=%d\n", ch, first_raw, n);
   }
 
   const float mean_mv = (n > 0) ? (float)(sum_mv / (double)n) : 0;
