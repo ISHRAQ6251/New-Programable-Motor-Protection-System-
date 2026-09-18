@@ -5,6 +5,7 @@
 #include "voltage.h"
 #include "config_pins.h"
 #include "config_limits.h"
+#include "types.h"          // ← Explicit include for clarity
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -55,7 +56,7 @@ static void i2cScan() {
     }
     Serial.printf("Expected: 0x%02X (ADDR->GND)=CH0-3, 0x%02X (ADDR->VDD)=CH4-7\n",
                   ADS1115_ADDR_A, ADS1115_ADDR_B);
-    Serial.printf("Scan complete: %u device(s) found\n", found);
+    Serial.printf("Scan complete: %u device(s) found\n", (unsigned)found);
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +80,7 @@ void voltageBegin() {
         // Quick probe before Adafruit library init
         const uint8_t probe_err = i2cProbe(kAddr[i]);
         if (probe_err != 0) {
-            Serial.printf("NOT FOUND (I2C err=%u)\n", probe_err);
+            Serial.printf("NOT FOUND (I2C err=%u)\n", (unsigned)probe_err);
             s_ok[i] = 0;
             continue;
         }
@@ -112,7 +113,7 @@ void voltageBegin() {
 
 void voltageReprobe() {
     // Re-probe without full re-initialization (for Calibrate command)
-    i2cInitOnce();  // Ensure bus is up
+    i2cInitOnce();  // Ensure bus is up (no-op if already initialized)
 
     for (int i = 0; i < 2; i++) {
         const uint8_t err = i2cProbe(kAddr[i]);
@@ -130,9 +131,9 @@ void voltageReprobe() {
         } else if (!now_ok && s_ok[i]) {
             // Chip disappeared
             s_ok[i] = 0;
-            Serial.printf("ADS1115 0x%02X: lost (I2C err=%u)\n", kAddr[i], err);
+            Serial.printf("ADS1115 0x%02X: lost (I2C err=%u)\n", kAddr[i], (unsigned)err);
         }
-        // else: no change
+        // else: no change in status
     }
 }
 
@@ -279,18 +280,4 @@ VoltageSample voltageSample(int ch, const ChannelRuntime *rt) {
     }
 
     return r;
-}
-
-// ---------------------------------------------------------------------------
-// Diagnostics helper (called from protection task)
-// ---------------------------------------------------------------------------
-
-void protectionCopyVcal(uint8_t out[MAX_CHANNELS]) {
-    if (!out) {
-        return;
-    }
-    // This is a stub — the actual implementation is in protection.cpp
-    // This function exists to maintain API compatibility
-    // The protection task reads v_calibrated directly from ChannelRuntime
-    (void)out;
 }
