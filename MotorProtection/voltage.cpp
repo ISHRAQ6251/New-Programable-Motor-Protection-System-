@@ -10,10 +10,41 @@ static Adafruit_ADS1115 s_ads[2];
 static uint8_t s_ok[2] = {0, 0};
 static const uint8_t kAddr[2] = {ADS1115_ADDR_A, ADS1115_ADDR_B};
 
-static bool probeAddr(uint8_t addr) {
+static const char *i2cErrLabel(uint8_t e) {
+  switch (e) {
+    case 0: return "ok";
+    case 1: return "data too long";
+    case 2: return "NACK addr";
+    case 3: return "NACK data";
+    case 4: return "other";
+    case 5: return "timeout";
+    default: return "unknown";
+  }
+}
+
+static uint8_t probeAddr(uint8_t addr) {
   voltageRebindWire();
   Wire.beginTransmission(addr);
-  return Wire.endTransmission() == 0;
+  return Wire.endTransmission();
+}
+
+static void scanBus() {
+  voltageRebindWire();
+  Wire.setClock(400000);
+  Serial.print("I2C scan:");
+  bool any = false;
+  for (uint8_t a = 0x03; a <= 0x77; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf(" 0x%02X", a);
+      any = true;
+    }
+  }
+  if (!any) {
+    Serial.print(" (none)");
+  }
+  Serial.println();
+  Serial.println("Expected: 0x48 (ADDR->GND)=CH0-3, 0x49 (ADDR->VDD)=CH4-7");
 }
 
 void voltageRebindWire() {
@@ -25,6 +56,7 @@ void voltageBegin() {
   s_ok[1] = 0;
   voltageRebindWire();
   Wire.setClock(400000);
+  scanBus();
 
   for (int i = 0; i < 2; i++) {
     voltageRebindWire();
@@ -32,8 +64,10 @@ void voltageBegin() {
     Wire.end();
     voltageRebindWire();
     Wire.setClock(400000);
-    if (!begun || !probeAddr(kAddr[i])) {
-      Serial.printf("ADS1115 0x%02X: not found\n", kAddr[i]);
+    const uint8_t err = probeAddr(kAddr[i]);
+    if (!begun || err != 0) {
+      Serial.printf("ADS1115 0x%02X: not found (I2C err=%u %s)\n",
+                    kAddr[i], (unsigned)err, i2cErrLabel(err));
       s_ok[i] = 0;
       continue;
     }

@@ -465,6 +465,7 @@ void protectionTask(void *arg) {
       }
       xSemaphoreGive(s_mu);
       if (idle) {
+        voltageBegin();
         sensingCalibrateAll(tmpch);
         voltageCalibrateAll(tmpch);
         xSemaphoreTake(s_mu, portMAX_DELAY);
@@ -616,4 +617,15 @@ MotorStatus protectionMotorStatus(int idx) {
 
 void protectionSetSdOk(uint8_t ok) {
   s_sd_ok = ok;
+}
+
+void protectionCopyVcal(uint8_t out[MAX_CHANNELS]) {
+  if (!out) {
+    return;
+  }
+  xSemaphoreTake(s_mu, portMAX_DELAY);
+  for (int i = 0; i < MAX_CHANNELS; i++) {
+    out[i] = s_ch[i].v_calibrated;
+  }
+  xSemaphoreGive(s_mu);
 }

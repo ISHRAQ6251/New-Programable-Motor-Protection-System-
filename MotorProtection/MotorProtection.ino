@@ -92,5 +92,30 @@ void loop() {
     protectionSetSdOk(sdLogOk() ? 1 : 0);
   }
 
+  static uint32_t diag_last = 0;
+  const uint32_t now = millis();
+  if ((uint32_t)(now - diag_last) >= 5000u) {
+    diag_last = now;
+    const uint8_t a0 = voltageAdsOk(0) ? 1 : 0;
+    const uint8_t a1 = voltageAdsOk(1) ? 1 : 0;
+    uint8_t vcal[MAX_CHANNELS];
+    protectionCopyVcal(vcal);
+    bool ready = a0 && a1;
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+      if (!vcal[i]) {
+        ready = false;
+        break;
+      }
+    }
+    if (!ready) {
+      Serial.printf("diag: ads_ok=[%u,%u] vcal=[%u,%u,%u,%u,%u,%u,%u,%u]\n",
+                    (unsigned)a0, (unsigned)a1,
+                    (unsigned)vcal[0], (unsigned)vcal[1],
+                    (unsigned)vcal[2], (unsigned)vcal[3],
+                    (unsigned)vcal[4], (unsigned)vcal[5],
+                    (unsigned)vcal[6], (unsigned)vcal[7]);
+    }
+  }
+
   delay(5);
 }

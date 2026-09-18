@@ -11,3 +11,4 @@ ToneId protectionTakeTone();
 bool protectionAllIdleForCal();
 MotorStatus protectionMotorStatus(int idx);
 void protectionSetSdOk(uint8_t ok);
+void protectionCopyVcal(uint8_t out[MAX_CHANNELS]);

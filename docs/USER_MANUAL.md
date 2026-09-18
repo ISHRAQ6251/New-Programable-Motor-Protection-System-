@@ -326,7 +326,7 @@ Stall might be set to 45 A so a locked rotor trips on the next ~20 ms window, wi
 - **Start** — only from Stopped, and only after zero calibration (done automatically at boot). DC Start also needs the ADS1115 for that motor's channels.
 - **Stop** — opens the relay(s), zeros thermal energy, power, session energy, and live readings.
 - **Reset** — from Fault or Cooling, same as Stop plus silence buzzer.
-- **Calibrate zeros** — re-measures current ADC zeros and DC voltage zeros on all 8 channels. Allowed only when every motor is Stopped or Fault. Relays stay off so voltage taps sit at 0 V.
+- **Calibrate zeros** — re-probes I²C for the two ADS1115 chips, then re-measures current ADC zeros and DC voltage zeros on all 8 channels. Allowed only when every motor is Stopped or Fault. Relays stay off so voltage taps sit at 0 V. A wiring fix to an ADDR pin is picked up here without a reboot.
 
 ### 5.4 Fault log (SD)
 
@@ -541,7 +541,8 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Log page yellow banner | No SD or 5 V fed to a 3.3 V breakout | Insert a FAT-formatted card on 3.3 V SPI; protection is unaffected |
 | Compile error `ledcChangeFrequency` | Mixing ESP32 core 2.x vs 3.x | Use Arduino-ESP32 3.x and `ledcAttach` / 3-arg `ledcChangeFrequency` |
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
-| DC Start disabled / "needs ADS1115" | Chip unpopulated or I²C on wrong pins | Serial `ADS1115 0x48/0x49`. Confirm ADDR wiring and GPIO 14/42, not 8/9 |
+| DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, or I²C on GPIO 8/9 | Serial `I2C scan` then `ADS1115 0x48/0x49` with `I2C err=`. CH0–3 are always 0x48 (ADDR→GND), CH4–7 always 0x49 (ADDR→VDD) — swapping the modules does not swap channels. Press Calibrate to re-probe; no reboot |
+| `diag: ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / missing pull-ups |
 | Live DC V stuck at 0 with motor running | Tap is upstream of the relay, or not calibrated | Tap **downstream** of the relay. Calibrate with motors Stopped |
 | Live DC V reads ~19 % high vs a meter | Firmware still using the old 180 k / 10 k scale | Flash this tree (150 k / 10 k, scale 16) and recalibrate zeros |
 | Edit rejected "stall current must exceed In…" | Stall ≤ In or ≤ a protection-step current | Raise stall above In and every `k × In` |
