@@ -32,8 +32,8 @@ static const float ACS712_MV_PER_AMP = 66.0f;
 static const float DIVIDER_RATIO     = 0.6f;
 static const float MV_PER_AMP        = ACS712_MV_PER_AMP * DIVIDER_RATIO;
 
-// DC voltage: R1=180k, R2=10k on the motor terminal (downstream of relay).
-// 0-50 V -> ~0-2.63 V at ADS1115 AIN. Scale = (R1+R2)/R2 = 19.
-static const float VDIV_R1    = 180000.0f;
+// DC voltage: R1=150k, R2=10k on the motor terminal (downstream of relay).
+// 0-50 V -> ~0-3.13 V at ADS1115 AIN. Scale = (R1+R2)/R2 = 16.
+static const float VDIV_R1    = 150000.0f;
 static const float VDIV_R2    = 10000.0f;
 static const float VDIV_SCALE = (VDIV_R1 + VDIV_R2) / VDIV_R2;

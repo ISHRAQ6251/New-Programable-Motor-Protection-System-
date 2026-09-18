@@ -18,7 +18,7 @@ Add live DC bus voltage sensing (8 channels via 2x ADS1115) with optional underv
 | I2C pins | GPIO 14 SDA, GPIO 42 SCL. `Wire.begin(14, 42)` never default 8/9 |
 | ADS addresses | 0x48 ADDR=GND → CH0–3 AIN0–3; 0x49 ADDR=VDD → CH4–7 AIN0–3 |
 | Gain | `GAIN_ONE` (±4.096 V) set explicitly after `begin()`, not library default |
-| Divider | R1=180 kΩ, R2=10 kΩ, scale 19. 0–50 V → ~0–2.63 V |
+| Divider | R1=150 kΩ, R2=10 kΩ, scale 16. 0–50 V → ~0–3.13 V |
 | Tap point | Each motor's terminal voltage **downstream of its relay**, not the shared bus |
 | Zero cal | Same idle-cal path as current. Stopped = relay open = ~0 V at tap |
 | UV/OV | DC only. 0 disables that trip independently. If both > 0, OV must be > UV |
@@ -45,7 +45,7 @@ Presence = probe ACK after re-bind, not the boolean from `ads.begin()` alone.
 
 ```
 V_adc  = ads.computeVolts(raw)          // volts at AIN, GAIN_ONE
-V_bus  = (V_adc - v_zero) * 19.0        //  (R1+R2)/R2
+V_bus  = (V_adc - v_zero) * 16.0        //  (R1+R2)/R2
 ```
 
 `v_zero` is the mean AIN voltage with the relay open (calibrate). Never assume 0.000 V.

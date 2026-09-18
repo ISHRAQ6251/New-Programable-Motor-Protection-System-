@@ -31,7 +31,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 | Relays | Logic-level modules, default active-HIGH (GPIO HIGH = coil on) |
 | SD | RoboticsBD 3.3 V Micro SD breakout, SPI, no onboard regulator |
 | Buzzer | 1x passive (PWM) |
-| DC voltage | 2× ADS1115 (I²C), 180 k / 10 k divider per channel |
+| DC voltage | 2× ADS1115 (I²C), 150 k / 10 k divider per channel |
 
 Power the ESP32 from USB or a 5 V supply that shares ground with the ACS712 boards and relay modules. The SD breakout is **3.3 V only** — do not feed it 5 V.
 
@@ -150,21 +150,21 @@ Firmware calls `Wire.begin(14, 42)` before and after `ads.begin()` because Adafr
 Each voltage divider taps the **motor terminal downstream of that channel's relay**, not the shared DC bus:
 
 ```
-Motor terminal (after relay) -- 180 kOhm --+-- ADS1115 AINx
+Motor terminal (after relay) -- 150 kOhm --+-- ADS1115 AINx
                                            |
                                          10 kOhm
                                            |
                                           GND
 ```
 
-- Scale = (180k + 10k) / 10k = **19**
-- 0–50 V → about **0–2.63 V** at the ADS input
+- Scale = (150k + 10k) / 10k = **16**
+- 0–50 V → about **0–3.13 V** at the ADS input
 - Firmware **calibrates** the AIN zero with the relay open (tap sits at 0 V). Do not assume 0.000 V.
 
 Conversion:
 
 ```
-V_bus (V) = (V_adc - v_zero) × 19
+V_bus (V) = (V_adc - v_zero) × 16
 ```
 
 There is **no AC voltage sensor**. For AC motors, enter a static **Rated AC voltage** on Add/Edit. It is stored in NVS and shown as configuration, not as live telemetry, and is not used for trips.
@@ -290,7 +290,7 @@ Live values poll about once per second.
 | Stopped | OFF | Idle. Start is allowed |
 | Running | ON | Sampling current, accumulating I²t |
 | Cooling | OFF | Just tripped. Waiting `cooling_s` seconds |
-| Fault | OFF | Cooling finished, auto-restart is off. Press Reset, then Start |
+| Fault | OFF | Cooling finished and auto-restart is off, or 3 consecutive trips. Press Reset, then Start |
 
 Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silences the fault buzzer. Stop is only enabled while Running.
 
@@ -302,9 +302,9 @@ Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silen
 4. **Supply** — AC or DC.
    - AC: pick **50 Hz** or **60 Hz** (RMS window) and **Rated AC voltage** (nameplate only; not sensed, not a trip).
    - DC: optional **Undervoltage** and **Overvoltage** in volts. **0 disables** that trip. If both are set, OV must be greater than UV. Live V is the terminal downstream of the relay.
-5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window.
+5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window. Must exceed In and every I²t step current.
 6. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
-7. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off).
+7. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off). On still latches Fault after 3 consecutive trips; a 10-minute trip-free run, Start, or Reset clears the counter.
 8. **Relay polarity** — Active-HIGH (default) or Active-LOW for this motor's channels.
 9. **N protection steps** (1–8). For each step enter:
    - **k × In** — current multiplier (e.g. 1.2 means 1.2 × operating current)
@@ -340,7 +340,7 @@ uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA
 
 DC rows fill `power_W`; AC rows fill `power_VA`; the other column is blank. Power is the value from the sample window that tripped.
 
-Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Export downloads the same CSV. Clear rewrites the header only. Older 4- or 5-column rows still parse; missing columns read as blank.
+Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`, `NO_CURRENT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Export downloads the same CSV. Clear rewrites the header only. Older 4- or 5-column rows still parse; missing columns read as blank.
 
 No card: Log page shows a yellow banner. Motors still protect.
 
@@ -456,10 +456,12 @@ Immediate trip `SENSOR_FAULT` if, on an assigned channel while Running:
 
 - Mean ADC voltage outside **0.05–3.05 V** (open or shorted divider)
 - |I_rms| above **40 A** (beyond a 30 A sensor)
-- AC reading **stuck** (identical millivolt samples across a full window) — a dead ADC looks like a flat line, which a real AC current is not
+- AC or DC reading **stuck** (identical millivolt samples across a full window)
 - DC: ADS1115 missing / I²C timeout, |V_adc| > 4 V, or |V_bus| > 55 V
 
 Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (this is trip-immediately, not latched).
+
+If every phase of a Running motor stays below **0.05 × In** for **2 s**, trip `NO_CURRENT`. That catches a broken sense wire sitting at ACS712 mid-rail (~0 A), an open winding, or a relay that never closed.
 
 ### 7.5 DC undervoltage / overvoltage
 
@@ -493,8 +495,8 @@ Key points:
 Stopped --Start--> Running
 Running --Stop---> Stopped
 Running --trip---> Cooling      relays OFF, log, fault tone
-Cooling --timer + auto-restart On --> Running
-Cooling --timer + auto-restart Off--> Fault
+Cooling --timer + auto-restart On and consecutive trips < 3 --> Running
+Cooling --timer + auto-restart Off or 3 consecutive trips--> Fault
 Cooling or Fault --Reset--> Stopped
 ```
 
@@ -512,11 +514,14 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Session cookie | `mps_sess`, HttpOnly, 8 hours |
 | Channels / motors / steps | 8 / 8 / 8 |
 | ACS712 | 30 A, 66 mV/A, divider ×0.6 → 39.6 mV/A |
-| DC voltage | ADS1115 GAIN_ONE, 180 k / 10 k (×19), I²C 14/42 |
+| DC voltage | ADS1115 GAIN_ONE, 150 k / 10 k (×16), I²C 14/42 |
 | ADC | 12-bit, 11 dB attenuation, ADC1 only (current) |
 | RMS samples | ≥ 32 over ≥ 1 AC cycle |
 | Sensor |I| cap | 40 A |
 | UV/OV grace | 250 ms after DC Start |
+| No-current trip | Running and max phase `< 0.05 × In` for 2 s |
+| Auto-restart cap | 3 consecutive trips, then Fault; 10 min clean run clears |
+| Task WDT | 5 s on the protection task (hang → MCU reset, relays off) |
 | Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA` |
 | Power | DC `W` (true); AC `VA` (apparent at rated V); PF unknown |
 | Session energy | RAM only, `Wh`/`VAh`, resets on Start and reboot |
@@ -538,6 +543,9 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
 | DC Start disabled / "needs ADS1115" | Chip unpopulated or I²C on wrong pins | Serial `ADS1115 0x48/0x49`. Confirm ADDR wiring and GPIO 14/42, not 8/9 |
 | Live DC V stuck at 0 with motor running | Tap is upstream of the relay, or not calibrated | Tap **downstream** of the relay. Calibrate with motors Stopped |
+| Live DC V reads ~19 % high vs a meter | Firmware still using the old 180 k / 10 k scale | Flash this tree (150 k / 10 k, scale 16) and recalibrate zeros |
+| Edit rejected "stall current must exceed In…" | Stall ≤ In or ≤ a protection-step current | Raise stall above In and every `k × In` |
+| Motor trips `NO_CURRENT` at Start | Sense wire open, ACS712 unpowered, or relay never closed | Check ACS712 5 V, sense wiring, and that the relay actually closes |
 | Motors vanished after this flash | NVS schema 2 vs v1 blob | Expected. Re-enter motors. Auth credentials are unchanged |
 
 ---

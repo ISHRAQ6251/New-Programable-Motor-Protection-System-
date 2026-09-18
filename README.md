@@ -15,6 +15,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - Classic **I²t energy** trip curve (not inverse-time interpolation)
 - Independent **stall** trip on the next RMS window
 - **Sensor-fault** trip (stuck ADC, out-of-range Vadc, |I| > 40 A, or missing ADS1115 on a DC channel)
+- **No-current** trip after 2 s Running below 5 % of In (broken sense wire / open winding)
 - Live **DC voltage** with optional undervoltage / overvoltage trip (0 = that trip disabled)
 - **Rated AC voltage** is a manual nameplate field (not sensed, not used for trips)
 - **Power** display and fault-log columns: true `W` for DC, apparent `VA` at rated V for AC (PF unknown)
@@ -32,7 +33,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 | Arduino IDE board | ESP32S3 Dev Module, Flash 16 MB, PSRAM OPI |
 | Sensors | ACS712-30A, 66 mV/A, 5 V supply |
 | Analog path | 10 k / 15 k divider (x0.6) to ADC1 — about 39.6 mV/A |
-| DC voltage | 2× ADS1115 (I²C 0x48 / 0x49), 180 k / 10 k divider, tap downstream of each relay |
+| DC voltage | 2× ADS1115 (I²C 0x48 / 0x49), 150 k / 10 k divider, tap downstream of each relay |
 | Relays | Logic-level modules, default active-HIGH, boot LOW = OFF |
 | SD | 3.3 V SPI breakout (not SDIO, not 5 V) |
 | Buzzer | Passive, LEDC PWM |
@@ -72,7 +73,7 @@ Sensor fault → trip **SENSOR_FAULT** immediately. Auto-restart still applies.
 
 DC only, after 250 ms of Running: live V below UV (if UV > 0) → **UNDERVOLT**; above OV (if OV > 0) → **OVERVOLT**. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared.
 
-On trip: de-energize that motor's relay(s), sound the fault tone, append an SD log line if a card is mounted, enter **Cooling**. After cooling: auto-restart if enabled, else **Fault**. Reset from the UI returns Fault/Cooling to Stopped and silences the buzzer.
+On trip: de-energize that motor's relay(s), sound the fault tone, append an SD log line if a card is mounted, enter **Cooling**. After cooling: auto-restart if enabled and consecutive trips are under 3, else **Fault**. A 10-minute trip-free run (or Start/Reset) clears the restart counter. Reset from the UI returns Fault/Cooling to Stopped and silences the buzzer.
 
 3-phase: one motor, three channels; any phase trips all three relays; the UI shows one row. Thermal % is the hottest phase (`100 × E / E_trip`).
 
@@ -142,6 +143,8 @@ LICENSE                   MIT
 | Channels / motors / steps | 8 / 8 / 8 |
 | RMS samples | ≥ 32 over ≥ 1 AC cycle |
 | Sensor \|I\| cap | 40 A |
+| No-current trip | 2 s below 0.05 × In while Running |
+| Auto-restart cap | 3 consecutive trips; 10 min clean run clears |
 | ADC | 12-bit, 11 dB, ADC1 only |
 | NVS namespace | `mps` (motors blob, auth_user, auth_pass) |
 | Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA` |

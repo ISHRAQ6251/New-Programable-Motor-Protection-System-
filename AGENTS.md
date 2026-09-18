@@ -35,7 +35,7 @@ Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0 Serial).
 | Buzzer | 21 | Passive, LEDC PWM |
 | I²C SDA / SCL | 14 / 42 | Explicit `Wire.begin(14, 42)` — not default 8/9 |
 
-DC voltage: 2× ADS1115 over that I²C bus. 0x48 (ADDR→GND) = CH0–3 AIN0–3; 0x49 (ADDR→VDD) = CH4–7 AIN0–3. Gain `GAIN_ONE` (±4.096 V). Divider R1=180 kΩ / R2=10 kΩ (scale 19), 0–50 V → ~2.63 V. Tap is each motor **terminal downstream of its relay**, not the shared bus.
+DC voltage: 2× ADS1115 over that I²C bus. 0x48 (ADDR→GND) = CH0–3 AIN0–3; 0x49 (ADDR→VDD) = CH4–7 AIN0–3. Gain `GAIN_ONE` (±4.096 V). Divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~3.13 V. Tap is each motor **terminal downstream of its relay**, not the shared bus.
 
 Analog current: ACS712-30A (66 mV/A) → 10k/15k divider (×0.6) → ~39.6 mV/A at the ADC. Zero-current and DC zero-voltage are **calibrated**, never assumed.
 
@@ -69,13 +69,15 @@ Running and below pickup: `E` decays toward 0 over `cooling_s`.
 
 Stall: `I_rms >= stall_amps` on the next window → trip `STALL` immediately.
 
-Sensor fault (stuck ADC, Vadc out of `[0.05, 3.05]` V, |I| > 40 A, missing ADS1115 on a running DC channel, |Vadc| > 4 V, or |Vbus| > 55 V) → trip `SENSOR_FAULT` immediately. Auto-restart still applies.
+Sensor fault (stuck ADC AC or DC, Vadc out of `[0.05, 3.05]` V, |I| > 40 A, missing ADS1115 on a running DC channel, |Vadc| > 4 V, or |Vbus| > 55 V) → trip `SENSOR_FAULT` immediately. Auto-restart still applies.
+
+Running and max phase current `< 0.05 × In` for 2 s → trip `NO_CURRENT` (broken sense wire / open winding / relay that never closed).
 
 DC only, after 250 ms of Running (relay just closed): `Vbus < uv_volts` (if uv > 0) → `UNDERVOLT`; `Vbus > ov_volts` (if ov > 0) → `OVERVOLT`. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared.
 
-On trip: de-energize that motor's relay(s), `toneFault()`, append SD log if mounted, enter Cooling. After cooling: auto-restart if enabled, else Fault. Reset from UI clears Fault/Cooling to Stopped and silences the buzzer.
+On trip: de-energize that motor's relay(s), `toneFault()`, append SD log if mounted, enter Cooling. After cooling: auto-restart if enabled **and** consecutive trips `< 3`, else Fault. A trip-free run of 10 min clears the restart counter; Start and Reset also clear it. Reset from UI clears Fault/Cooling to Stopped and silences the buzzer.
 
-Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection never depends on SD.
+Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds a 5 s Task WDT; a hang resets the MCU and `setup()` drops relays. Protection never depends on SD. Sample each running motor then trip immediately (not after every other channel). `dt` credited up to 5 s after a task stall.
 
 ## Current implementation status
 
@@ -88,8 +90,8 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection never depe
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
 | Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean |
 | DC voltage ADS1115 | `voltage.cpp` | done — Adafruit ADS1X15, GAIN_ONE, off-mutex sample |
-| I²t / stall / UV / OV / sensor-fault / power | `protection.cpp` | done — dedicated FreeRTOS task, prio 5, core 1; power from same pass, RAM-only energy |
-| NVS motor store | `motor_store.cpp` | done — blob + login credentials |
+| I²t / stall / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — dedicated FreeRTOS task, prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap |
+| NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes corrupt records; stall must exceed In and every I²t step; cooling ≤ 86400 s |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
 | Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form |
@@ -133,6 +135,8 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 - ADC attenuation = 11 dB
 - Channel allocation = lowest free indices
 - Thermal % = `100 * E / E_trip` of the active step
+- Motor API add endpoint is `/api/motor/add` (never `/api/motor`, which prefixes `/edit` and `/del`)
+- Task WDT 5 s on the protection task; NO_CURRENT after 2 s below 0.05×In; auto-restart cap 3, reset after 10 min clean run; `dt` cap 5 s
 - Fault CSV path `/faults.csv` with `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA`; old 4/5-column rows still parse
 - Power/energy are RAM only in `MotorRuntime`; no NVS write, no schema bump (stays 2). Energy resets on Start and reboot
 - AC power is apparent `VA` at rated V; power factor is not measurable and must never be shown as `W`
@@ -168,9 +172,9 @@ User-facing guide (pins, wiring, libraries, dashboard, I²t math): `docs/USER_MA
 
 1. Flash this build — confirm `/login` then dashboard (no browser Basic Auth prompt)
 2. Confirm Serial `ADS1115 0x48/0x49: ok` (or `not found` if unpopulated); DC Start disabled without the chip for that motor
-3. Inject current / short a sense pin to verify I²t, stall, and SENSOR_FAULT trips
+3. Inject current / short a sense pin to verify I²t, stall, SENSOR_FAULT, and NO_CURRENT trips
 4. DC: apply voltage downstream of a closed relay; confirm live V and UV/OV trips (0 = disabled)
 5. Confirm missing-SD path (log page banner) and present-SD CSV write
 6. Power: DC known load vs bench meter; AC hand-check `V_rated × I_rms`; 3-phase current-unbalance check; trip CSV carries `power_W` / `power_VA`; energy reads `0.00` after reboot
 
-Last firmware: power calc + dashboard display + fault-log power columns on top of DC-voltage build (`12941fb`). Docs (`AGENTS.md`, `README.md`, `docs/USER_MANUAL.md`, all design specs) updated.
+Last firmware: safety review (`912a982`) on top of power display (`9f19f3c`) and DC-voltage (`12941fb`). Divider is R1=150 kΩ / R2=10 kΩ (scale 16). Docs updated.

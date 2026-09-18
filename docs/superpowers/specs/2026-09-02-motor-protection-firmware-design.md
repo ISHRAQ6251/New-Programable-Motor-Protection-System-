@@ -23,7 +23,7 @@ Correctness and code clarity matter more than polish. This is a university engin
 | ACS712 | ACS712-30A, 66 mV/A, all channels |
 | Current divider | R1=10 kΩ, R2=15 kΩ, ratio 0.6 |
 | DC voltage | 2× ADS1115 on I²C (0x48 / 0x49), `GAIN_ONE`, tap downstream of each relay |
-| Voltage divider | R1=180 kΩ, R2=10 kΩ, scale 19. Zero calibrated with relay open |
+| Voltage divider | R1=150 kΩ, R2=10 kΩ, scale 16. Zero calibrated with relay open |
 | UV / OV trip | DC only, optional: `0` disables each independently; if both set, OV > UV |
 | Rated AC voltage | AC nameplate only, stored in NVS. Never sensed, never a trip input |
 | I²C pins | GPIO 14 SDA / 42 SCL. Explicit `Wire.begin(14, 42)`, not default 8/9 |
@@ -130,9 +130,9 @@ Analog path (current):
 Analog path (DC voltage):
 
 - 2× ADS1115 on I²C: 0x48 (ADDR→GND) = CH0–3 AIN0–3; 0x49 (ADDR→VDD) = CH4–7 AIN0–3
-- Per channel divider R1=180 kΩ / R2=10 kΩ (scale 19), 0–50 V → ~0–2.63 V
+- Per channel divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~0–3.13 V
 - Gain `GAIN_ONE` (±4.096 V), data rate 250 SPS, set explicitly after `begin()`
-- `V_bus = (V_adc - v_zero) * 19.0`; `v_zero` is calibrated with the relay open, never assumed 0 V
+- `V_bus = (V_adc - v_zero) * 16.0`; `v_zero` is calibrated with the relay open, never assumed 0 V
 - Tap is the motor terminal **downstream of that channel's relay**, not the shared bus
 - Adafruit BusIO's `ads.begin()` calls `Wire.begin()` with no pins; firmware re-binds GPIO 14/42 before and after each `begin()`
 
@@ -238,12 +238,14 @@ If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately. N
 
 Trip `SENSOR_FAULT` immediately if, on an assigned channel:
 
-- ADC reading is stuck (unchanged across a full window within 1 LSB) while the motor is Running, or
+- ADC reading is stuck (unchanged across a full window within 1 LSB) while the motor is Running (AC or DC), or
 - Mean Vadc is outside `[0.05 V, 3.05 V]` (open/shorted divider), or
 - Computed |I_rms| is physically implausible (> 40 A on a 30 A sensor)
 - DC voltage path (Running DC only): the ADS1115 for that channel is missing / I²C fails, `|V_adc| > 4.0 V`, or `|V_bus| > 55 V`
 
 Same trip path as other faults (relays off, tone, log, cooling). Auto-restart still applies.
+
+Running and every phase `I_rms < 0.05 × In` for 2 s → `NO_CURRENT` (broken sense wire, open winding, or a relay that never closed).
 
 ### 6.5 DC undervoltage / overvoltage
 
@@ -257,8 +259,8 @@ Trip order within one sample window: `SENSOR`, `STALL`, `OV`, `UV`, `I2T`.
 Stopped --Start--> Running
 Running --Stop---> Stopped
 Running --trip---> Cooling     (relays OFF, fault tune, SD log)
-Cooling --timer, auto_restart=1--> Running
-Cooling --timer, auto_restart=0--> Fault
+Cooling --timer, auto_restart=1 and consecutive trips < 3--> Running
+Cooling --timer, auto_restart=0 or 3 consecutive trips--> Fault
 Cooling --Reset--> Stopped     (cancel auto-restart, buzzer off)
 Fault   --Reset--> Stopped     (buzzer off)
 ```
@@ -322,7 +324,7 @@ Mount failure: set `sd_ok = false`, Serial warning, never touch `File` objects, 
 
 Log file `/faults.csv`. Header: `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA`
 
-Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`.
+Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`, `NO_CURRENT`.
 
 3-phase current-at-fault is the RMS of the phase that crossed the threshold. `voltage_V` is the DC bus voltage at the fault (0 for AC motors). DC rows fill `power_W`, AC rows fill `power_VA`; the other stays blank. Older 4- or 5-column CSVs still parse.
 
