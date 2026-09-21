@@ -193,6 +193,9 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m) {
   }
   copyParam(req, "name", m->name, NAME_LEN, "");
   m->phase_count = (uint8_t)paramI(req, "phases", "1");
+  if (m->phase_count != 1 && m->phase_count != 3) {
+    m->phase_count = 1;
+  }
   m->is_ac = (uint8_t)paramI(req, "ac", "1");
   m->mains_hz = (uint8_t)paramI(req, "hz", "50");
   m->in_amps = paramF(req, "in", "0");
@@ -206,6 +209,17 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m) {
   m->rated_ac_v = paramF(req, "vac", "0");
   m->uv_volts = paramF(req, "uv", "0");
   m->ov_volts = paramF(req, "ov", "0");
+  {
+    const int vch = paramI(req, "vch", "-1");
+    m->voltage_channel = (vch >= 0 && vch < MAX_CHANNELS) ? (uint8_t)vch : VCH_SAME;
+  }
+  {
+    const char *keys[MAX_PHASES] = {"ch0", "ch1", "ch2"};
+    for (int p = 0; p < MAX_PHASES; p++) {
+      const int ch = paramI(req, keys[p], "-1");
+      m->channels[p] = (ch >= 0 && ch < MAX_CHANNELS) ? (uint8_t)ch : CH_UNUSED;
+    }
+  }
   const uint8_t pol = (uint8_t)paramI(req, "pol", "1");
   for (int p = 0; p < MAX_PHASES; p++) {
     m->relay_active_high[p] = pol;
@@ -299,12 +313,21 @@ static void handleStatus(AsyncWebServerRequest *req) {
     char *vw = vbuf;
     *vw = 0;
     uint8_t vcal = 1;
-    for (int p = 0; p < m->phase_count; p++) {
-      const uint8_t c = m->channels[p];
-      const float v = (c < MAX_CHANNELS) ? snap.volts[c] : 0;
-      vw += snprintf(vw, vbuf + sizeof(vbuf) - vw, "%s%.3f", p ? "," : "", (double)v);
-      if (c >= MAX_CHANNELS || !snap.v_calibrated[c]) {
+    if (!m->is_ac && m->voltage_channel < MAX_CHANNELS) {
+      const uint8_t vc = m->voltage_channel;
+      const float v = snap.volts[vc];
+      vw += snprintf(vw, vbuf + sizeof(vbuf) - vw, "%.3f", (double)v);
+      if (!snap.v_calibrated[vc]) {
         vcal = 0;
+      }
+    } else {
+      for (int p = 0; p < m->phase_count; p++) {
+        const uint8_t c = m->channels[p];
+        const float v = (c < MAX_CHANNELS) ? snap.volts[c] : 0;
+        vw += snprintf(vw, vbuf + sizeof(vbuf) - vw, "%s%.3f", p ? "," : "", (double)v);
+        if (c >= MAX_CHANNELS || !snap.v_calibrated[c]) {
+          vcal = 0;
+        }
       }
     }
     char pwr[16];
@@ -332,7 +355,7 @@ static void handleStatus(AsyncWebServerRequest *req) {
                   "\"power\":%s,\"power_unit\":\"%s\",\"energy\":%.2f,"
                   "\"in\":%.4f,\"stall\":%.4f,\"cool\":%.3f,\"ac\":%u,\"hz\":%u,"
                   "\"vac\":%.3f,\"uv\":%.3f,\"ov\":%.3f,\"auto\":%u,\"pol\":%u,\"vcal\":%u,"
-                  "\"jam\":%u,\"jam_active\":%u,\"jam_count\":%u,\"steps\":%s}",
+                  "\"jam\":%u,\"jam_active\":%u,\"jam_count\":%u,\"vch\":%u,\"steps\":%s}",
                   i, m->name, (unsigned)snap.rt[i].status, stName(snap.rt[i].status),
                   (unsigned)snap.rt[i].run_start_ms, (unsigned)snap.rt[i].fault_count,
                   ftName(snap.rt[i].last_fault), chbuf, (unsigned)m->phase_count,
@@ -345,7 +368,8 @@ static void handleStatus(AsyncWebServerRequest *req) {
                   (unsigned)vcal,
                   (unsigned)m->stall_recovery,
                   (unsigned)(snap.rt[i].jam_phase != JAM_IDLE ? 1 : 0),
-                  (unsigned)snap.rt[i].jam_count, stepbuf);
+                  (unsigned)snap.rt[i].jam_count,
+                  (unsigned)m->voltage_channel, stepbuf);
     if (n < 0 || w + n >= end) {
       jsonUnlock();
       sendErr(req, "json overflow");
