@@ -16,10 +16,27 @@ struct SampleJob {
   uint8_t phase_count;
   uint8_t is_ac;
   uint8_t mains_hz;
+  uint8_t voltage_channel;
   uint8_t channels[MAX_PHASES];
   SampleResult res[MAX_PHASES];
   VoltageSample vres[MAX_PHASES];
+  VoltageSample vsense;
 };
+
+static uint32_t s_volt_log_ms[MAX_MOTORS];
+
+static uint8_t voltageChOf(const MotorRecord *m) {
+  if (!m) {
+    return CH_UNUSED;
+  }
+  if (m->voltage_channel < MAX_CHANNELS) {
+    return m->voltage_channel;
+  }
+  if (m->phase_count > 0 && m->channels[0] < MAX_CHANNELS) {
+    return m->channels[0];
+  }
+  return CH_UNUSED;
+}
 
 static MotorRecord s_motors[MAX_MOTORS];
 static MotorRuntime s_rt[MAX_MOTORS];
@@ -106,6 +123,16 @@ static void zeroEnergy(int mi) {
       s_ch[c].energy_a2s = 0;
       s_ch[c].last_rms = 0;
       s_ch[c].last_v = 0;
+      s_ch[c].v_filt = 0;
+      s_ch[c].v_filt_valid = 0;
+    }
+  }
+  {
+    const uint8_t vc = voltageChOf(&s_motors[mi]);
+    if (vc < MAX_CHANNELS) {
+      s_ch[vc].last_v = 0;
+      s_ch[vc].v_filt = 0;
+      s_ch[vc].v_filt_valid = 0;
     }
   }
   s_rt[mi].thermal_pct = 0;
@@ -147,16 +174,26 @@ static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
                 s_motors[mi].name, ftn, (double)current_a, (double)voltage_v);
 }
 
+static bool channelAdsReady(uint8_t c) {
+  if (c >= MAX_CHANNELS) {
+    return false;
+  }
+  return voltageAdsOk(c < 4 ? 0 : 1) && s_ch[c].v_calibrated;
+}
+
 static bool motorAdsReady(const MotorRecord *m) {
   if (!m || m->is_ac) {
     return true;
+  }
+  if (m->voltage_channel < MAX_CHANNELS) {
+    return channelAdsReady(m->voltage_channel);
   }
   for (int p = 0; p < m->phase_count; p++) {
     const uint8_t c = m->channels[p];
     if (c >= MAX_CHANNELS) {
       continue;
     }
-    if (!voltageAdsOk(c < 4 ? 0 : 1) || !s_ch[c].v_calibrated) {
+    if (!channelAdsReady(c)) {
       return false;
     }
   }
@@ -256,8 +293,18 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
   }
   s_ch[c].last_rms = s.rms;
   s_ch[c].last_ms = now;
-  if (vs) {
-    s_ch[c].last_v = vs->v_bus;
+  if (vs && vs->present) {
+    if (!vs->fault) {
+      if (s_ch[c].v_filt_valid) {
+        s_ch[c].v_filt = 0.9f * s_ch[c].v_filt + 0.1f * vs->v_bus;
+      } else {
+        s_ch[c].v_filt = vs->v_bus;
+        s_ch[c].v_filt_valid = 1;
+      }
+      s_ch[c].last_v = s_ch[c].v_filt;
+    } else {
+      s_ch[c].last_v = vs->v_bus;
+    }
   }
 
   if (*trip_ft != FT_NONE) {
@@ -301,16 +348,17 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
     if (rt->jam_phase == JAM_IDLE) {
       const uint32_t age = now - rt->run_start_ms;
       if (age >= UV_GRACE_MS) {
-        if (m->ov_volts > 0.0f && vs->v_bus > m->ov_volts) {
+        const float v = s_ch[c].v_filt_valid ? s_ch[c].v_filt : vs->v_bus;
+        if (m->ov_volts > 0.0f && v > m->ov_volts) {
           *trip_ft = FT_OVERVOLT;
           *trip_i = s.rms;
-          *trip_v = vs->v_bus;
+          *trip_v = v;
           return;
         }
-        if (m->uv_volts > 0.0f && vs->v_bus < m->uv_volts) {
+        if (m->uv_volts > 0.0f && v < m->uv_volts) {
           *trip_ft = FT_UNDERVOLT;
           *trip_i = s.rms;
-          *trip_v = vs->v_bus;
+          *trip_v = v;
           return;
         }
       }
@@ -350,6 +398,54 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
   }
 }
 
+static void applyVoltageSense(int mi, const VoltageSample *vs, uint32_t now,
+                              FaultType *trip_ft, float *trip_i, float *trip_v) {
+  MotorRecord *m = &s_motors[mi];
+  if (!vs || m->is_ac || *trip_ft != FT_NONE) {
+    return;
+  }
+  const uint8_t c = voltageChOf(m);
+  if (c >= MAX_CHANNELS) {
+    return;
+  }
+  if (vs->present) {
+    if (!vs->fault) {
+      if (s_ch[c].v_filt_valid) {
+        s_ch[c].v_filt = 0.9f * s_ch[c].v_filt + 0.1f * vs->v_bus;
+      } else {
+        s_ch[c].v_filt = vs->v_bus;
+        s_ch[c].v_filt_valid = 1;
+      }
+      s_ch[c].last_v = s_ch[c].v_filt;
+    } else {
+      s_ch[c].last_v = vs->v_bus;
+    }
+  }
+  if (!vs->present || vs->fault) {
+    *trip_ft = FT_SENSOR;
+    *trip_v = vs->v_bus;
+    return;
+  }
+  MotorRuntime *rt = &s_rt[mi];
+  if (rt->jam_phase != JAM_IDLE) {
+    return;
+  }
+  const uint32_t age = now - rt->run_start_ms;
+  if (age < UV_GRACE_MS) {
+    return;
+  }
+  const float v = s_ch[c].v_filt_valid ? s_ch[c].v_filt : vs->v_bus;
+  if (m->ov_volts > 0.0f && v > m->ov_volts) {
+    *trip_ft = FT_OVERVOLT;
+    *trip_v = v;
+    return;
+  }
+  if (m->uv_volts > 0.0f && v < m->uv_volts) {
+    *trip_ft = FT_UNDERVOLT;
+    *trip_v = v;
+  }
+}
+
 static void computePower(int mi, const SampleJob &job, float dt) {
   const MotorRecord *m = &s_motors[mi];
   MotorRuntime *rt = &s_rt[mi];
@@ -375,9 +471,19 @@ static void computePower(int mi, const SampleJob &job, float dt) {
     rt->energy += s_va * dt / 3600.0f;
   } else {
     float p = 0.0f;
-    for (int ch = 0; ch < job.phase_count; ch++) {
-      const float v = job.vres[ch].present ? job.vres[ch].v_bus : 0.0f;
-      p += v * job.res[ch].rms;
+    const uint8_t vc = voltageChOf(m);
+    if (m->voltage_channel < MAX_CHANNELS && vc < MAX_CHANNELS) {
+      float sum_i = 0.0f;
+      for (int ch = 0; ch < job.phase_count; ch++) {
+        sum_i += job.res[ch].rms;
+      }
+      p = s_ch[vc].last_v * sum_i;
+    } else {
+      for (int ch = 0; ch < job.phase_count; ch++) {
+        const uint8_t c = job.channels[ch];
+        const float v = (c < MAX_CHANNELS) ? s_ch[c].last_v : 0.0f;
+        p += v * job.res[ch].rms;
+      }
     }
     if (p < 0.0f) {
       p = 0.0f;
@@ -397,9 +503,13 @@ static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
   FaultType trip_ft = FT_NONE;
   float trip_i = 0;
   float trip_v = 0;
+  const bool dedicated_v = !job->is_ac && job->voltage_channel < MAX_CHANNELS;
   for (int p = 0; p < job->phase_count; p++) {
-    const VoltageSample *vs = job->is_ac ? nullptr : &job->vres[p];
+    const VoltageSample *vs = (job->is_ac || dedicated_v) ? nullptr : &job->vres[p];
     applySample(mi, p, job->res[p], vs, now, dt, &hottest, &trip_ft, &trip_i, &trip_v);
+  }
+  if (dedicated_v) {
+    applyVoltageSense(mi, &job->vsense, now, &trip_ft, &trip_i, &trip_v);
   }
   computePower(mi, *job, dt);
   s_rt[mi].thermal_pct = hottest;
@@ -424,8 +534,11 @@ static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
         (uint32_t)(now - s_rt[mi].low_current_ms) >= NO_CURRENT_MS) {
       trip_ft = FT_NO_CURRENT;
       trip_i = max_i;
-      if (!job->is_ac && job->vres[0].present) {
-        trip_v = job->vres[0].v_bus;
+      if (!job->is_ac) {
+        const uint8_t vc = voltageChOf(&s_motors[mi]);
+        if (vc < MAX_CHANNELS) {
+          trip_v = s_ch[vc].last_v;
+        }
       }
     }
   } else {
@@ -434,6 +547,20 @@ static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
 
   if (trip_ft != FT_NONE) {
     trip(mi, trip_ft, trip_i, trip_v);
+  } else if (!job->is_ac &&
+             (uint32_t)(now - s_volt_log_ms[mi]) >= VOLT_LOG_MS) {
+    s_volt_log_ms[mi] = now;
+    const uint8_t vc = voltageChOf(&s_motors[mi]);
+    float raw = 0;
+    if (dedicated_v) {
+      raw = job->vsense.v_bus;
+    } else if (job->vres[0].present) {
+      raw = job->vres[0].v_bus;
+    }
+    const float filt = (vc < MAX_CHANNELS) ? s_ch[vc].last_v : 0;
+    Serial.printf("VOLT: motor=%s ch=%u raw=%.2f filt=%.2f uv=%.1f ov=%.1f\n",
+                  s_motors[mi].name, (unsigned)vc, (double)raw, (double)filt,
+                  (double)s_motors[mi].uv_volts, (double)s_motors[mi].ov_volts);
   }
 }
 
@@ -470,7 +597,8 @@ static void processJamRelease(int mi, uint32_t now) {
       still = true;
       if (s_ch[c].last_rms > trip_i) {
         trip_i = s_ch[c].last_rms;
-        trip_v = s_ch[c].last_v;
+        const uint8_t vc = voltageChOf(m);
+        trip_v = (vc < MAX_CHANNELS) ? s_ch[vc].last_v : s_ch[c].last_v;
       }
     }
   }
@@ -611,6 +739,7 @@ void protectionTask(void *arg) {
       jobs[nj].phase_count = s_motors[i].phase_count;
       jobs[nj].is_ac = s_motors[i].is_ac;
       jobs[nj].mains_hz = s_motors[i].mains_hz;
+      jobs[nj].voltage_channel = s_motors[i].voltage_channel;
       memcpy(jobs[nj].channels, s_motors[i].channels, sizeof(jobs[nj].channels));
       nj++;
     }
@@ -626,9 +755,12 @@ void protectionTask(void *arg) {
           continue;
         }
         job->res[p] = sensingSample((int)c, &chcopy[c], job->is_ac, job->mains_hz);
-        if (!job->is_ac) {
+        if (!job->is_ac && job->voltage_channel >= MAX_CHANNELS) {
           job->vres[p] = voltageSample((int)c, &chcopy[c]);
         }
+      }
+      if (!job->is_ac && job->voltage_channel < MAX_CHANNELS) {
+        job->vsense = voltageSample((int)job->voltage_channel, &chcopy[job->voltage_channel]);
       }
       xSemaphoreTake(s_mu, portMAX_DELAY);
       applyMotorSample(job, now, dt);
@@ -743,16 +875,27 @@ bool protectionCanStart(const StatusSnapshot &snap, int idx, const char **reason
   }
   bool ads_ok = true;
   bool vcal = true;
-  for (int p = 0; p < snap.motors[idx].phase_count; p++) {
-    const uint8_t c = snap.motors[idx].channels[p];
-    if (c >= MAX_CHANNELS) {
-      continue;
-    }
+  const MotorRecord *m = &snap.motors[idx];
+  if (m->voltage_channel < MAX_CHANNELS) {
+    const uint8_t c = m->voltage_channel;
     if (!snap.ads_ok[c < 4 ? 0 : 1]) {
       ads_ok = false;
     }
     if (!snap.v_calibrated[c]) {
       vcal = false;
+    }
+  } else {
+    for (int p = 0; p < m->phase_count; p++) {
+      const uint8_t c = m->channels[p];
+      if (c >= MAX_CHANNELS) {
+        continue;
+      }
+      if (!snap.ads_ok[c < 4 ? 0 : 1]) {
+        ads_ok = false;
+      }
+      if (!snap.v_calibrated[c]) {
+        vcal = false;
+      }
     }
   }
   if (!ads_ok) {
