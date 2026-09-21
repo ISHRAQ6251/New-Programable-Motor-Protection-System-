@@ -439,8 +439,11 @@ static void renderMotor(const StatusSnapshot &snap) {
 
   y += 12;
   if (!m->is_ac) {
-    const uint8_t c0 = m->channels[0];
-    const float v = (c0 < MAX_CHANNELS) ? snap.volts[c0] : 0;
+    uint8_t vc = m->voltage_channel;
+    if (vc >= MAX_CHANNELS) {
+      vc = m->channels[0];
+    }
+    const float v = (vc < MAX_CHANNELS) ? snap.volts[vc] : 0;
     snprintf(b, sizeof(b), "%.1f V  %.0f W", (double)v, (double)rt->power);
   } else {
     snprintf(b, sizeof(b), "%.0f V~  %.0f VA", (double)m->rated_ac_v, (double)rt->power);
