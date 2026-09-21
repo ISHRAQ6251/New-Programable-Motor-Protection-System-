@@ -108,8 +108,13 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
     <form id="f-add">
       <label for="a-ph">Phase count</label>
       <select id="a-ph" name="phases"><option value="1">1 — single phase</option><option value="3">3 — three phase</option></select>
-      <label>Allocated channels</label>
-      <div id="a-ch" class="help">select phase count</div>
+      <label for="a-ch0">Current channel 0</label>
+      <select id="a-ch0" name="ch0"></select>
+      <label for="a-ch1" class="ph3-only">Current channel 1</label>
+      <select id="a-ch1" name="ch1" class="ph3-only"></select>
+      <label for="a-ch2" class="ph3-only">Current channel 2</label>
+      <select id="a-ch2" name="ch2" class="ph3-only"></select>
+      <div id="a-ch" class="help">Auto allocates the lowest free indices. Pick 0–7 to pin a channel.</div>
       <label for="a-name">Name</label>
       <input id="a-name" name="name" maxlength="23" required>
       <label for="a-in">Operating current In (A)</label>
@@ -127,6 +132,9 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <label for="a-ov" class="dc-only">Overvoltage trip (V)</label>
       <input id="a-ov" name="ov" type="number" step="0.1" min="0" max="55" value="0" class="dc-only">
       <span class="help dc-only">0 disables. Must be greater than UV if both are set.</span>
+      <label for="a-vch" class="dc-only">Voltage sense channel</label>
+      <select id="a-vch" name="vch" class="dc-only"></select>
+      <span class="help dc-only">Auto uses the same ADS tap as current CH0. Pick 0–7 for a dedicated tap.</span>
       <label for="a-stall">Stall current (A)</label>
       <input id="a-stall" name="stall" type="number" step="0.01" min="0.01" required>
       <label for="a-cool">Cooling time (s)</label>
@@ -151,6 +159,12 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <select id="e-pick"></select></p>
     <form id="f-edit" hidden>
       <label>Channels</label><div id="e-ch" class="help"></div>
+      <label for="e-ch0">Current channel 0</label>
+      <select id="e-ch0"></select>
+      <label for="e-ch1" class="e-ph3-only">Current channel 1</label>
+      <select id="e-ch1" class="e-ph3-only"></select>
+      <label for="e-ch2" class="e-ph3-only">Current channel 2</label>
+      <select id="e-ch2" class="e-ph3-only"></select>
       <label for="e-name">Name</label>
       <input id="e-name" name="name" maxlength="23" required>
       <label for="e-in">Operating current In (A)</label>
@@ -168,6 +182,9 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <label for="e-ov" class="e-dc-only">Overvoltage trip (V)</label>
       <input id="e-ov" type="number" step="0.1" min="0" max="55" class="e-dc-only">
       <span class="help e-dc-only">0 disables. Must be greater than UV if both are set.</span>
+      <label for="e-vch" class="e-dc-only">Voltage sense channel</label>
+      <select id="e-vch" class="e-dc-only"></select>
+      <span class="help e-dc-only">Auto uses the same ADS tap as current CH0.</span>
       <label for="e-stall">Stall current (A)</label>
       <input id="e-stall" type="number" step="0.01" min="0.01" required>
       <label for="e-cool">Cooling time (s)</label>
@@ -276,7 +293,8 @@ function renderDash(){
   used.forEach(m=>{
     const st=ST[m.status]||"?";
     const ads=(DATA.ads_ok||[0,0]);
-    const adsOk=m.ac||(m.channels||[]).every(c=>ads[c<4?0:1]);
+    const vch=(typeof m.vch==="number"&&m.vch<8)?m.vch:null;
+    const adsOk=m.ac||(vch!==null?ads[vch<4?0:1]:(m.channels||[]).every(c=>ads[c<4?0:1]));
     const canStart=m.status===0 && adsOk && (m.ac || m.vcal);
     const startWhy=canStart?"":(!m.ac&&!adsOk)?" title=\"ADS1115 missing for this motor\"":(!m.ac&&!m.vcal)?" title=\"Calibrate DC voltage zeros first\"":"";
     const canStop=m.status===1;
@@ -331,6 +349,37 @@ function setShown(nodes,on){
     if(lab&&lab.tagName==="LABEL") lab.hidden=!on;
   });
 }
+function chOpts(sel,n,picked,keep){
+  const used=new Set();
+  (DATA.motors||[]).forEach(m=>{
+    if(!m.used) return;
+    if(keep!=null&&m.idx===keep) return;
+    (m.channels||[]).forEach(c=>used.add(+c));
+  });
+  const cur=sel.value;
+  sel.innerHTML="<option value='-1'>Auto (lowest free)</option>"+
+    [0,1,2,3,4,5,6,7].map(c=>{
+      const taken=used.has(c)&&+picked!==c;
+      return "<option value='"+c+"'"+(taken?" disabled":"")+">CH "+c+(taken?" (in use)":"")+"</option>";
+    }).join("");
+  if(picked>=0&&picked<8) sel.value=String(picked);
+  else if(cur!==""&&sel.querySelector("option[value='"+cur+"']")) sel.value=cur;
+  else sel.value="-1";
+}
+function vchOpts(sel,picked){
+  sel.innerHTML="<option value='-1'>Auto (same as CH0)</option>"+
+    [0,1,2,3,4,5,6,7].map(c=>"<option value='"+c+"'>CH "+c+"</option>").join("");
+  if(picked>=0&&picked<8) sel.value=String(picked);
+  else sel.value="-1";
+}
+function syncPhases(which){
+  const n=+(which==="a"?$("a-ph").value:($("e-pick").value!==""?(DATA.motors.find(x=>x.idx===+$("e-pick").value)||{}).phases:1))||1;
+  if(which==="a"){
+    setShown([...document.querySelectorAll("#f-add .ph3-only")],n===3);
+  }else{
+    setShown([...document.querySelectorAll("#f-edit .e-ph3-only")],n===3);
+  }
+}
 function syncSupply(which){
   const ac=$(which+"-ac").value==="1";
   if(which==="a"){
@@ -344,23 +393,44 @@ function syncSupply(which){
   }
 }
 function refreshAlloc(){
-  const n=$("a-ph").value;
+  const n=+$("a-ph").value||1;
+  syncPhases("a");
+  chOpts($("a-ch0"),n,-1,null);
+  chOpts($("a-ch1"),n,-1,null);
+  chOpts($("a-ch2"),n,-1,null);
+  vchOpts($("a-vch"),-1);
+  const a0=$("a-ch0").value,a1=$("a-ch1").value,a2=$("a-ch2").value;
+  const manual=a0!=="-1"||(n===3&&(a1!=="-1"||a2!=="-1"));
+  if(manual){
+    const ch=[a0];
+    if(n===3){ch.push(a1);ch.push(a2);}
+    $("a-ch").textContent="CH "+ch.map(x=>x==="-1"?"Auto":x).join(", ");
+    return;
+  }
   fetch("/api/alloc?n="+n,{credentials:"same-origin"}).then(guard).then(r=>r.json()).then(j=>{
-    $("a-ch").textContent=j.ok?("CH "+j.channels.join(", ")):(j.err||"cannot allocate");
+    $("a-ch").textContent=j.ok?("CH "+j.channels.join(", ")+" (auto)"):(j.err||"cannot allocate");
   });
 }
 $("a-ph").onchange=refreshAlloc;
+$("a-ch0").onchange=refreshAlloc;
+$("a-ch1").onchange=refreshAlloc;
+$("a-ch2").onchange=refreshAlloc;
 $("a-ac").onchange=()=>syncSupply("a");
 $("e-ac").onchange=()=>syncSupply("e");
 $("f-add").onsubmit=ev=>{
   ev.preventDefault();
   const n=+$("a-n").value;
   const ac=$("a-ac").value;
-  let body="phases="+$("a-ph").value+"&name="+encodeURIComponent($("a-name").value)+
+  const ph=+$("a-ph").value||1;
+  let body="phases="+ph+"&name="+encodeURIComponent($("a-name").value)+
     "&in="+$("a-in").value+"&ac="+ac+"&hz="+$("a-hz").value+
     "&vac="+(ac==="1"?$("a-vac").value:"0")+
     "&uv="+(ac==="0"?$("a-uv").value:"0")+
     "&ov="+(ac==="0"?$("a-ov").value:"0")+
+    "&vch="+(ac==="0"?$("a-vch").value:"-1")+
+    "&ch0="+$("a-ch0").value+
+    "&ch1="+(ph===3?$("a-ch1").value:"-1")+
+    "&ch2="+(ph===3?$("a-ch2").value:"-1")+
      "&stall="+$("a-stall").value+"&cool="+$("a-cool").value+"&auto="+$("a-auto").value+
      "&jam="+($("a-jam").checked?1:0)+
     "&pol="+$("a-pol").value+"&n="+n;
@@ -386,6 +456,12 @@ function fillEditForm(){
   if(!m){$("f-edit").hidden=true;return}
   $("f-edit").hidden=false;
   $("e-ch").textContent="CH "+(m.channels||[]).join(", ")+"  ("+m.phases+"-phase)";
+  const keep=m.idx;
+  chOpts($("e-ch0"),m.phases,(m.channels&&m.channels[0]!=null)?m.channels[0]:-1,keep);
+  chOpts($("e-ch1"),m.phases,(m.channels&&m.channels[1]!=null)?m.channels[1]:-1,keep);
+  chOpts($("e-ch2"),m.phases,(m.channels&&m.channels[2]!=null)?m.channels[2]:-1,keep);
+  vchOpts($("e-vch"),(typeof m.vch==="number"&&m.vch<8)?m.vch:-1);
+  syncPhases("e");
   $("e-name").value=m.name;$("e-in").value=m.in;$("e-ac").value=m.ac?1:0;
   $("e-hz").value=m.hz||50;$("e-stall").value=m.stall;$("e-cool").value=m.cool;
   $("e-auto").value=m.auto?1:0;$("e-jam").checked=!!m.jam;$("e-pol").value=m.pol?1:0;$("e-n").value=m.steps.length||1;
@@ -399,11 +475,16 @@ $("f-edit").onsubmit=ev=>{
   ev.preventDefault();
   const i=$("e-pick").value;const n=+$("e-n").value;
   const ac=$("e-ac").value;
+  const ph=(DATA.motors.find(x=>x.idx===+i)||{}).phases||1;
   let body="idx="+i+"&name="+encodeURIComponent($("e-name").value)+
     "&in="+$("e-in").value+"&ac="+ac+"&hz="+$("e-hz").value+
     "&vac="+(ac==="1"?$("e-vac").value:"0")+
     "&uv="+(ac==="0"?$("e-uv").value:"0")+
     "&ov="+(ac==="0"?$("e-ov").value:"0")+
+    "&vch="+(ac==="0"?$("e-vch").value:"-1")+
+    "&ch0="+$("e-ch0").value+
+    "&ch1="+(ph===3?$("e-ch1").value:"-1")+
+    "&ch2="+(ph===3?$("e-ch2").value:"-1")+
      "&stall="+$("e-stall").value+"&cool="+$("e-cool").value+"&auto="+$("e-auto").value+
      "&jam="+($("e-jam").checked?1:0)+
     "&pol="+$("e-pol").value+"&n="+n;
