@@ -24,3 +24,8 @@ uint8_t voltageAdsErr(int chip);
 const char *voltageI2cErrLabel(uint8_t e);
 void voltageCalibrateAll(ChannelRuntime *ch);
 VoltageSample voltageSample(int ch, const ChannelRuntime *rt);
+
+// Shared I2C bus mutex (ADS1115 in this file, OLED in ui.cpp). Hold only
+// across the actual Wire/library I2C call — never across delay() or drawing.
+void i2cLock();
+void i2cUnlock();

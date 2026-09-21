@@ -15,37 +15,39 @@ the command queue, and the same Start gate.
 | Item | Value |
 |---|---|
 | Display | SH1106 128×64 I²C, default address **0x3C** |
-| Display bus | **Second** I²C bus `Wire1` — GPIO 25 SDA / 47 SCL |
-| Encoder | KY-040, GPIO 22 CLK / 23 DT / 24 SW |
+| Display bus | Shared ADS1115 I²C bus `Wire` — GPIO 14 SDA / 42 SCL |
+| Encoder | KY-040, GPIO 47 CLK / 48 DT / 46 SW |
 | Buzzer | existing LEDC buzzer on GPIO 21 |
 
-The display bus is physically separate from the ADS1115 bus (`Wire` GPIO 14/42),
-so no mutex is shared with `voltage.cpp` and `voltage.cpp` is unchanged except for
-two read-only accessors.
+GPIO 22–25 do not exist on ESP32-S3. GPIO 46 is input-only/strapping (ROM extra
+boot-log text only) and is used deliberately as ENC_SW — a button, never an
+output. The OLED shares the ADS1115 bus; `s_i2c_mu` serializes every Wire
+transaction and is never held across `delay()` or drawing.
 
 KY-040 wiring: the module has its own pull-ups on CLK/DT/SW, so the pins are
 configured as plain `INPUT`. No internal pull-ups, no external resistors.
 
 ## Library
 
-U8g2, using `U8G2_SH1106_128X64_NONAME_F_2ND_HW_I2C` (the variant that targets
-`Wire1`). Initialization:
+U8g2, using `U8G2_SH1106_128X64_NONAME_F_HW_I2C` (primary hardware I²C). Pins are
+set via `Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL)` — there are no `OLED_SDA_PIN` /
+`OLED_SCL_PIN` constants. Initialization:
 
 ```
-Wire1.begin(OLED_SDA_PIN, OLED_SCL_PIN);
-Wire1.setClock(OLED_I2C_HZ);
+Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+Wire.setClock(OLED_I2C_HZ);
 u8g2.begin();
-Wire1.begin(OLED_SDA_PIN, OLED_SCL_PIN);   // re-bind; U8g2 may call begin() with no pins
-Wire1.setClock(OLED_I2C_HZ);
+Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);   // re-bind; U8g2 may call begin() with no pins
+Wire.setClock(OLED_I2C_HZ);
 ```
 
-Never call `Wire1.end()`. The primary `Wire` bus is never touched.
+Never call `Wire.end()`. After `u8g2.begin()`, re-bind 14/42 the same way
+`voltage.cpp` re-binds after `ads.begin()`. Every raw Wire transaction is held
+under `i2cLock()` / `i2cUnlock()` only for that call.
 
-Fallback: only if `Wire1` is genuinely unavailable on the target, switch the
-constructor to `U8G2_SH1106_128X64_NONAME_F_SW_I2C` with the same pins. Do not
-use the bit-banged variant to work around a hardware-constructor signature — the
-point of this change is a real second I2C peripheral isolated from the ADS1115
-bus.
+Fallback: only if hardware I²C is genuinely unavailable on the target, switch the
+constructor to `U8G2_SH1106_128X64_NONAME_F_SW_I2C`. Do not use the bit-banged
+variant to work around a hardware-constructor signature.
 
 Fonts: a proportional/bold face (`helvB08`, `helvB10`) for titles and headers, a
 proportional body face (`6x12`), and a small face (`5x7`) for dense lines.

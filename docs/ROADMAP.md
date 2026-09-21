@@ -6,8 +6,8 @@ that shipped on 2026-09-20 and its design lives in
 
 ## Local panel (built 2026-09-20)
 
-- SH1106 128×64 OLED on a dedicated second I²C bus, `Wire1` (GPIO 25 SDA / 47 SCL)
-- KY-040 encoder on GPIO 22 (CLK) / 23 (DT) / 24 (SW)
+- SH1106 128×64 OLED on the shared ADS1115 I²C bus, `Wire` (GPIO 14 SDA / 42 SCL)
+- KY-040 encoder on GPIO 47 (CLK) / 48 (DT) / 46 (SW)
 - `uiTask` on core 0: boot splash, Home, Per-motor, Fault Log, Diagnostics,
   Firmware Info, Network Info
 - Start/Stop shares the web dashboard's exact gate via `protectionCanStart()`
@@ -23,9 +23,9 @@ Out of scope for the panel, unchanged:
 
 ## Still open
 
-- The `_2ND_HW_I2C` constructor takes only `(rotation, reset)`; SDA/SCL are set
-  on `Wire1` before `u8g2.begin()` and re-bound right after. If `Wire1` is ever
-  found genuinely unavailable on a target, only then consider the bit-banged
+- The `_HW_I2C` constructor takes only `(rotation, reset)`; SDA/SCL are set
+  on `Wire` before `u8g2.begin()` and re-bound right after. If hardware I2C is
+  ever found genuinely unavailable on a target, only then consider the bit-banged
   `_SW_I2C` constructor — do not use it to dodge the constructor signature.
 - Consider a `SD`/`heap` line on Home for at-a-glance health (currently on
   Diagnostics).

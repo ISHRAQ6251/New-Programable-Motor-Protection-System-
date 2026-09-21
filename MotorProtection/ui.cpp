@@ -13,13 +13,13 @@
 #include "voltage.h"
 #include "motor_store.h"
 
-// SH1106 on the second I2C bus (Wire1). The hardware-I2C U8g2 constructors take
-// only (rotation, reset) — the SDA/SCL pins belong on the Wire1 object and are
-// bound in uiBegin() before u8g2.begin(). This variant drives the ESP32-S3's
-// real second I2C peripheral, electrically separate from the ADS1115 bus (Wire,
-// GPIO 14/42). Only fall back to the _SW_I2C constructor if Wire1 is genuinely
-// unavailable on the target; do not use it to sidestep a constructor signature.
-static U8G2_SH1106_128X64_NONAME_F_2ND_HW_I2C s_oled(U8G2_R0, U8X8_PIN_NONE);
+// SH1106 on the primary I2C bus (Wire), shared with the ADS1115s. Hardware-I2C
+// U8g2 constructors take only (rotation, reset) — pins are bound with
+// Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL) before u8g2.begin() and re-bound after
+// (Adafruit BusIO / U8g2 may call Wire.begin() with no pins). Never Wire.end().
+// Every raw Wire transaction is held under i2cLock()/i2cUnlock() only for the
+// duration of that call.
+static U8G2_SH1106_128X64_NONAME_F_HW_I2C s_oled(U8G2_R0, U8X8_PIN_NONE);
 
 #define UI_REFRESH_MS     160
 #define UI_SW_DEBOUNCE_MS 40
@@ -487,7 +487,9 @@ static void renderScreen() {
       s_msg[0] = 0;
     }
   }
+  i2cLock();
   s_oled.sendBuffer();
+  i2cUnlock();
 }
 
 // --- input ------------------------------------------------------------------
@@ -678,15 +680,19 @@ void uiBegin() {
   s_sw_last = (uint8_t)digitalRead(ENC_SW_PIN);
   s_sw_stable = s_sw_last;
 
-  Wire1.begin(OLED_SDA_PIN, OLED_SCL_PIN);
-  Wire1.setClock(OLED_I2C_HZ);
+  i2cLock();
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  Wire.setClock(OLED_I2C_HZ);
   s_oled.begin();
-  // U8g2's hardware-I2C setup may call Wire1.begin() with no pins; re-bind ours.
-  Wire1.begin(OLED_SDA_PIN, OLED_SCL_PIN);
-  Wire1.setClock(OLED_I2C_HZ);
+  // U8g2's hardware-I2C setup may call Wire.begin() with no pins; re-bind ours.
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  Wire.setClock(OLED_I2C_HZ);
   s_oled.setBusClock(OLED_I2C_HZ);
+  i2cUnlock();
   s_oled.clearBuffer();
+  i2cLock();
   s_oled.sendBuffer();
+  i2cUnlock();
 
   s_ui_start_ms = millis();
   s_boot_done_ms = s_ui_start_ms;

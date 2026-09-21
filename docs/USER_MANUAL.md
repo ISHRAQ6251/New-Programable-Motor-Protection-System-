@@ -42,7 +42,10 @@ Do not use these GPIOs for sensors or relays:
 
 | GPIO | Why |
 |---|---|
-| 0, 3, 45, 46 | Strapping pins (boot-mode) |
+| 22–25 | Do not exist on this chip at all (not physical pins) |
+| 26–37 | Reserved for flash / octal PSRAM on this N16R8 module |
+| 0, 3, 45 | Strapping pins (boot-mode / flash / JTAG) — fully off-limits |
+| 46 | Input-only strapping pin (ROM extra boot-log text only, unrelated to boot/flash/JTAG). Used here deliberately as ENC_SW (a button, never an output). Distinct from 0/3/45. |
 | 19, 20 | USB-JTAG |
 | 43, 44 | UART0 Serial monitor |
 
@@ -75,13 +78,11 @@ All GPIO numbers exist only in `MotorProtection/config_pins.h`. Changing a pin m
 | SD SCK | 12 | SPI | |
 | SD CS | 10 | SPI chip select | |
 | Buzzer | 21 | PWM (LEDC) | Passive buzzer |
-| I²C SDA | 14 | I²C | ADS1115 — not ESP32 default GPIO 8 |
-| I²C SCL | 42 | I²C | ADS1115 — not ESP32 default GPIO 9 |
-| OLED SDA | 25 | I²C (Wire1) | SH1106 panel — separate second bus |
-| OLED SCL | 47 | I²C (Wire1) | |
-| Encoder CLK | 22 | Digital in | KY-040 A, plain `INPUT` (module pull-up) |
-| Encoder DT | 23 | Digital in | KY-040 B |
-| Encoder SW | 24 | Digital in | KY-040 switch, active-LOW when pressed |
+| I²C SDA | 14 | I²C | Shared ADS1115 + SH1106 — not ESP32 default GPIO 8 |
+| I²C SCL | 42 | I²C | Shared ADS1115 + SH1106 — not ESP32 default GPIO 9 |
+| Encoder CLK | 47 | Digital in | KY-040 A, plain `INPUT` (module pull-up) |
+| Encoder DT | 48 | Digital in | KY-040 B |
+| Encoder SW | 46 | Digital in | KY-040 switch, active-LOW. GPIO 46 is input-only/strapping; used deliberately as a button (never an output). |
 | USB / Serial | 19, 20, 43, 44 | reserved | Do not reassign |
 
 ### 2.4 Analog front-end (every current channel)
@@ -151,7 +152,7 @@ ESP32 ADC1 is fully used by current sensing. DC voltage uses two ADS1115 16-bit 
 | ADS #1 | GND | 0x48 | CH0–CH3 → AIN0–AIN3 |
 | ADS #2 | VDD | 0x49 | CH4–CH7 → AIN0–AIN3 |
 
-Firmware calls `i2cInitOnce()` once (`Wire.begin(14, 42)`). Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins, so the sketch re-binds 14/42 after each `begin()`. **Never `Wire.end()`** — it destroys the driver (see `docs/I2C_TROUBLESHOOTING.md`). Gain is **GAIN_ONE** (±4.096 V). Both ADS1115 modules share that bus; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a reboot.
+Firmware calls `i2cInitOnce()` once (`Wire.begin(14, 42)`). Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins, so the sketch re-binds 14/42 after each `begin()`. **Never `Wire.end()`** — it destroys the driver (see `docs/I2C_TROUBLESHOOTING.md`). Gain is **GAIN_ONE** (±4.096 V). Both ADS1115 modules and the SH1106 OLED share that bus, serialized by `s_i2c_mu`; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a reboot.
 
 Each voltage divider taps the **motor terminal downstream of that channel's relay**, not the shared DC bus:
 
@@ -218,8 +219,7 @@ Built in with the ESP32 core (do not install separately):
 | Preferences | NVS motor list and login |
 | SD, SPI, FS | Optional fault CSV |
 | LEDC (esp32-hal-ledc) | Buzzer PWM |
-| Wire | I²C for ADS1115 (pins 14 / 42) |
-| Wire1 | I²C for the SH1106 panel (pins 25 / 47) |
+| Wire | I²C for ADS1115 and the SH1106 panel (pins 14 / 42, mutex `s_i2c_mu`) |
 
 If compile fails on Arduino-ESP32 3.x, use the maintained **ESP32Async** forks of both libraries, not the older me-no-dev copies.
 
@@ -392,7 +392,7 @@ Status is shown as an icon: square = Stopped, triangle = Running, warning triang
 
 A Start is refused with a short on-screen reason and a fault beep when a DC motor's ADS1115 or voltage calibration is not ready — the same rule the dashboard enforces.
 
-The panel uses a separate I2C bus (GPIO 25/47) and never touches the ADS1115 bus. If the display stays blank, check the address (0x3C) and the library notes in `docs/ROADMAP.md`.
+The panel shares the ADS1115 I²C bus (GPIO 14/42); every Wire transaction is held under `s_i2c_mu` only for the duration of that call. If the display stays blank, check the address (0x3C) and that U8g2 is using the primary `HW_I2C` constructor.
 
 ---
 
@@ -585,7 +585,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
 | DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 always 0x48, CH4–7 always 0x49. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
 | `I2C: diag ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / SDA-SCL swap / missing pull-ups |
-| OLED blank / no local panel | U8g2 not installed, wrong address, or library lacks the SH1106 `2ND_HW_I2C` variant | Confirm 0x3C on `Wire1` (GPIO 25/47). See `docs/ROADMAP.md` for the SW-I2C fallback |
+| OLED blank / no local panel | U8g2 not installed, wrong address, or bus contention | Confirm 0x3C on the shared Wire bus (GPIO 14/42). Constructor is `U8G2_SH1106_128X64_NONAME_F_HW_I2C` |
 | Encoder direction reversed | CLK/DT swapped for your module | Swap the CLK and DT wires. Bounce is already absorbed by the state-table decoder |
 | Panel shows `DC start needs the ADS1115…` | Same DC-readiness gate as the dashboard | Populate/repair the ADS1115, then press Calibrate |
 | Login page rejects mps / mps500 after a flash that printed `dash pass: mps50005` | NVS `auth_pass` was the AP password | This build restores `mps500` when `auth_pass` equals the AP password |

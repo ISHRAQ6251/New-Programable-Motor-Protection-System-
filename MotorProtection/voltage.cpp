@@ -2,6 +2,8 @@
 #include <Wire.h>
 #include <math.h>
 #include <Adafruit_ADS1X15.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "voltage.h"
 #include "config_pins.h"
 #include "config_limits.h"
@@ -12,10 +14,28 @@ static uint8_t s_ok[2] = {0, 0};
 static uint8_t s_err[2] = {0, 0};
 static uint8_t s_i2c_initialized = 0;
 static const uint8_t kAddr[2] = {ADS1115_ADDR_A, ADS1115_ADDR_B};
+static SemaphoreHandle_t s_i2c_mu = nullptr;
+
+void i2cLock() {
+  if (!s_i2c_mu) {
+    s_i2c_mu = xSemaphoreCreateMutex();
+  }
+  if (s_i2c_mu) {
+    xSemaphoreTake(s_i2c_mu, portMAX_DELAY);
+  }
+}
+
+void i2cUnlock() {
+  if (s_i2c_mu) {
+    xSemaphoreGive(s_i2c_mu);
+  }
+}
 
 static void i2cBindPins() {
+  i2cLock();
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   Wire.setClock(MPS_I2C_HZ);
+  i2cUnlock();
 }
 
 static void i2cInitOnce() {
@@ -29,8 +49,11 @@ static void i2cInitOnce() {
 }
 
 static uint8_t i2cProbe(uint8_t addr) {
+  i2cLock();
   Wire.beginTransmission(addr);
-  return Wire.endTransmission();
+  const uint8_t err = Wire.endTransmission();
+  i2cUnlock();
+  return err;
 }
 
 const char *voltageI2cErrLabel(uint8_t e) {
@@ -63,13 +86,18 @@ static void i2cScan() {
 }
 
 static bool adsInitChip(int i) {
+  i2cLock();
   const bool begun = s_ads[i].begin(kAddr[i], &Wire);
-  i2cBindPins();
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+  Wire.setClock(MPS_I2C_HZ);
+  i2cUnlock();
   if (!begun) {
     return false;
   }
+  i2cLock();
   s_ads[i].setGain(GAIN_ONE);
   s_ads[i].setDataRate(RATE_ADS1115_250SPS);
+  i2cUnlock();
   return true;
 }
 
@@ -151,15 +179,25 @@ static bool readAdcVolts(int chip, int ain, float *out_v) {
   if (!s_ok[chip] || ain < 0 || ain > 3 || !out_v) {
     return false;
   }
+  i2cLock();
   s_ads[chip].startADCReading(MUX_BY_CHANNEL[ain], false);
+  i2cUnlock();
   const uint32_t t0 = millis();
-  while (!s_ads[chip].conversionComplete()) {
+  for (;;) {
+    i2cLock();
+    const bool done = s_ads[chip].conversionComplete();
+    i2cUnlock();
+    if (done) {
+      break;
+    }
     if ((uint32_t)(millis() - t0) > (uint32_t)MPS_ADS_READ_TIMEOUT_MS) {
       return false;
     }
     delay(1);
   }
+  i2cLock();
   const int16_t raw = s_ads[chip].getLastConversionResults();
+  i2cUnlock();
   *out_v = s_ads[chip].computeVolts(raw);
   return true;
 }

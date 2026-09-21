@@ -11,7 +11,7 @@ Bench notes for the MPS-505 DC voltage bus. Firmware never auto-repairs a wiring
 | Clock | 400 kHz | `MPS_I2C_HZ` |
 | Pull-ups | 4.7 kΩ–10 kΩ to **3.3 V** | Required if the ADS breakouts do not already have them |
 
-ADS modules and (later) an SSD1306 at 0x3C share this bus. Power ADS VDD from 3.3 V, not 5 V.
+ADS modules and the SH1106 OLED at 0x3C share this bus (`s_i2c_mu` serializes every Wire transaction). Power ADS VDD from 3.3 V, not 5 V.
 
 ## ADDR map (fixed in firmware)
 

@@ -91,7 +91,7 @@ No GPIO literals outside `config_pins.h`.
 
 ## 4. Hardware and pin map
 
-Module: ESP32-S3-N16R8. Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0).
+Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits (strapping / boot / JTAG). GPIO 46 is input-only/strapping but is used deliberately as ENC_SW only. Also avoid 19/20 (USB-JTAG), 43/44 (UART0).
 
 | Function | GPIO | Notes |
 |---|---|---|
@@ -116,8 +116,11 @@ Module: ESP32-S3-N16R8. Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/4
 | SD SCK | 12 | |
 | SD CS | 10 | |
 | Buzzer | 21 | LEDC PWM, passive |
-| I²C SDA | 14 | ADS1115 — explicit `Wire.begin(14, 42)`, not default 8/9 |
-| I²C SCL | 42 | ADS1115 |
+| I²C SDA | 14 | Shared ADS1115 + SH1106 — explicit `Wire.begin(14, 42)`, not default 8/9 |
+| I²C SCL | 42 | Shared ADS1115 + SH1106 |
+| Encoder CLK | 47 | KY-040 A |
+| Encoder DT | 48 | KY-040 B |
+| Encoder SW | 46 | KY-040 switch; GPIO 46 input-only, used as a button only |
 
 Analog path (current):
 

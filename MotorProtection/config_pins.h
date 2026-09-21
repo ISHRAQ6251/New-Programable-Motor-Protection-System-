@@ -3,7 +3,13 @@
 #include <stdint.h>
 
 // ESP32-S3-N16R8 — all GPIO numbers live in this file only.
-// Avoided: 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0 Serial).
+// GPIO 22-25 do not exist on this chip at all (not physical pins).
+// GPIO 26-37 are reserved for flash/octal PSRAM on this N16R8 module.
+// GPIO 0/3/45 remain fully off-limits (strapping / boot mode / flash / JTAG).
+// GPIO 46 is input-only and a strapping pin (ROM extra boot-log text only,
+// unrelated to boot mode / flash mode / JTAG) and is used here deliberately
+// as ENC_SW — a button, never an output.
+// Also avoided: 19/20 (USB-JTAG), 43/44 (UART0 Serial).
 
 // ACS712-30A current-sense inputs — ADC1 only (Wi-Fi makes ADC2 unreliable).
 static const int PIN_ISENSE[8] = {1, 2, 4, 5, 6, 7, 8, 9};
@@ -35,18 +41,16 @@ static const int PIN_BUZZER = 21;
 
 // Local panel: KY-040 rotary encoder. The module carries its own pull-ups on
 // all three lines, so plain INPUT (no internal pull-up, no external resistors).
-static const int ENC_A_PIN  = 22;  // CLK
-static const int ENC_B_PIN  = 23;  // DT
-static const int ENC_SW_PIN = 24;  // SW (active-LOW when pressed)
+static const int ENC_A_PIN  = 47;  // CLK
+static const int ENC_B_PIN  = 48;  // DT
+// GPIO 46 is input-only and a strapping pin, but it only affects whether the
+// ROM prints extra boot-log text in the first instant of power-up — unrelated
+// to boot mode / flash mode / JTAG (those are GPIO 0, 3, 45). Safe here
+// because it is only ever read (a button, never an output).
+static const int ENC_SW_PIN = 46;  // SW (active-LOW when pressed)
 
-// Local panel: SH1106 128x64 OLED on a SECOND, independent I2C bus (Wire1).
-// Physically separate from the ADS1115 bus (GPIO 14/42), so no mutex is shared.
-#ifndef OLED_SDA_PIN
-#define OLED_SDA_PIN 25
-#endif
-#ifndef OLED_SCL_PIN
-#define OLED_SCL_PIN 47
-#endif
+// Local panel: SH1106 128x64 OLED shares the ADS1115 I2C bus (PIN_I2C_SDA /
+// PIN_I2C_SCL). Bus access is serialized by s_i2c_mu — never a second bus.
 #ifndef OLED_I2C_ADDR
 #define OLED_I2C_ADDR 0x3C
 #endif

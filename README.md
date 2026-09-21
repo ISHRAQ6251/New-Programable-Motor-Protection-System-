@@ -21,7 +21,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - **Power** display and fault-log columns: true `W` for DC (`V × I`), apparent `VA` at rated V for AC (PF unknown, never shown as `W`)
 - Desktop dashboard on SoftAP `MPS-505` / `mps50005`
 - Themed `/login` page + HttpOnly session cookie (default `mps` / `mps500`)
-- Local **SH1106 OLED + KY-040 encoder** panel (status + Start/Stop) on a second I²C bus, with buzzer feedback
+- Local **SH1106 OLED + KY-040 encoder** panel (status + Start/Stop) on the shared ADS1115 I²C bus, with buzzer feedback
 - Motor config in NVS; protection still runs if the SD card is missing
 - Three FreeRTOS tasks: Wi-Fi + UI on core 0, protection + `loop()` on core 1
 - Relays fail-safe OFF in `setup()` before Wi-Fi starts
@@ -41,7 +41,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 
 Zero-current and DC zero-voltage are **calibrated** at boot (relays open → 0 V at each voltage tap). Do not assume 1.5 V or 0.000 V.
 
-Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0 Serial). Current-sense pins are ADC1 only. **Do not use ESP32 default I²C GPIO 8/9** — those are current-sense CH6/CH7.
+GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits. GPIO 46 is input-only/strapping but is used deliberately as ENC_SW only. Also avoid 19/20 (USB-JTAG), 43/44 (UART0 Serial). Current-sense pins are ADC1 only. **Do not use ESP32 default I²C GPIO 8/9** — those are current-sense CH6/CH7.
 
 ### Pin map
 
@@ -53,7 +53,8 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 | Relay CH0–CH7 | 15, 16, 17, 18, 38, 39, 40, 41 |
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 |
 | Buzzer | 21 |
-| I²C SDA / SCL | **14 / 42** |
+| I²C SDA / SCL | **14 / 42** (shared ADS1115 + SH1106) |
+| Encoder CLK / DT / SW | 47 / 48 / 46 |
 
 ## Protection logic (short)
 
@@ -179,6 +180,7 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - I²C: `i2cInitOnce()` once; never `Wire.end()`; Calibrate calls `voltageReprobe()`
 - NVS schema 2
 - Local panel: SH1106 128x64 on `Wire1` (GPIO 25/47) + KY-040 encoder on 22/23/24; shared `protectionCanStart()` gate; `toneBack()`; U8g2 (2026-09-20)
+- 2026-09-21 pin/bus correction: encoder 47/48/46; OLED shares ADS1115 `Wire` 14/42; `s_i2c_mu` serializes every Wire transaction; GPIO 22–25 are not physical pins
 
 ## License
 
