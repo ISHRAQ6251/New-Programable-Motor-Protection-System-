@@ -204,6 +204,9 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - GPIO 48 is the onboard WS2812. Encoder is CLK 47 / DT 46 / SW 19. Do not drive GPIO 48 as encoder DT. The LED is one-wire — never take `s_i2c_mu` for it.
 - GPIO 19 is ENC_SW because this board programs and talks Serial through the UART bridge (43/44), not native USB. GPIO 43/44 stay untouched.
 - `uiTask` is not on the Task WDT; only the protection task is.
+- Clear Logs now clears both SD and RAM ring; if either succeeds, the button returns ok.
+- OLED rebuilds motor order every UI refresh (160 ms); motor add/edit/delete from web dashboard appears on panel without reboot.
+- Web log page serves RAM ring with ram_only:true when SD is missing; JavaScript shows warning banner. Clear stays available; Export stays SD-only.
 
 ## Next planned steps
 
@@ -221,5 +224,6 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - 2026-09-21 — Pin/bus correction: GPIO 22–25 do not exist on ESP32-S3. Encoder CLK/DT/SW moved to 47/48/46 (GPIO 46 is ENC_SW only). OLED shares the ADS1115 I²C bus (GPIO 14/42) via `U8G2_SH1106_128X64_NONAME_F_HW_I2C`; `s_i2c_mu` serializes every Wire transaction. Dropped `OLED_SDA_PIN`/`OLED_SCL_PIN`/`Wire1`.
 - 2026-09-21 — Encoder off GPIO 48 (onboard WS2812): CLK 47 / DT 46 / SW 19. NeoPixel status LED on GPIO 48 (worst-state Fault > Running > Cooling > Stopped; thermal gradient while Running; ~2 Hz fault/cooling flash). 3-frame RUNNING/FAULT/COOLING icons (~450 ms). Centered splash. Adafruit NeoPixel library.
 - 2026-09-21 — Optional per-motor stall recovery (jam release): 3× 300/500 ms pulses after 500 ms of Running; I²t and SENSOR stay live; stall / UV / OV / NO_CURRENT skipped while `jam_phase != IDLE`. 32-entry RAM fault ring feeds the web log when SD is missing (`ram_only`). NVS schema 3.
+- 2026-09-21 — Clear Logs clears SD and RAM ring (`protectionClearLog`); OLED rebuilds motor order every 160 ms refresh; web log already served RAM with `ram_only` when SD missing.
 
 Last firmware: I²C `i2cInitOnce` / `voltageReprobe` / no `Wire.end()` (origin `455debf` and follow-up quality), on top of Calibrate re-probe (`2f53bc7`), divider 150 kΩ / 10 kΩ (`b5e3754`), and safety review (`912a982`).

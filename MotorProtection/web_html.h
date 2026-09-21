@@ -198,7 +198,7 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
         <tbody id="log-body"></tbody>
       </table>
       <p class="form-actions" id="log-actions" style="margin-top:16px">
-        <a class="btn" href="/api/log/export">Export CSV</a>
+        <a class="btn" id="log-export" href="/api/log/export">Export CSV</a>
         <button class="btn-bad" id="log-clear">Clear log</button>
       </p>
     </div>
@@ -428,7 +428,8 @@ function loadLog(){
     $("log-unavail").hidden=!!j.sd_ok || ram;
     $("log-ram").hidden=!ram;
     $("log-wrap").hidden=!(j.sd_ok || ram);
-    $("log-actions").hidden=ram;
+    $("log-actions").hidden=!(j.sd_ok || ram);
+    $("log-export").hidden=ram;
     const tb=$("log-body");tb.innerHTML="";
     (j.rows||[]).forEach(row=>{
       const tr=document.createElement("tr");

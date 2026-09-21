@@ -709,6 +709,13 @@ int protectionCopyLog(LogEvent *out, int max) {
   return n;
 }
 
+void protectionClearLog() {
+  xSemaphoreTake(s_mu, portMAX_DELAY);
+  s_log_head = 0;
+  s_log_count = 0;
+  xSemaphoreGive(s_mu);
+}
+
 // Shared Start gate: the web API and the local panel must enforce the same
 // DC-readiness rule. Returns true when the command may be queued; when false,
 // *reason holds a short human-readable cause for the caller to surface.

@@ -630,10 +630,8 @@ static void handleLogClear(AsyncWebServerRequest *req) {
   if (!auth(req)) {
     return;
   }
-  if (!sdLogClear()) {
-    sendErr(req, "SD unavailable");
-    return;
-  }
+  sdLogClear();
+  protectionClearLog();
   sendOk(req);
 }
 

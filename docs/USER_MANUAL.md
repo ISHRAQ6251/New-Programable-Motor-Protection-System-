@@ -368,7 +368,7 @@ The dashboard shows `JAM (n/3)` next to status while a sequence is active. The l
 
 Every trip is written to a **32-entry RAM ring** (most recent first). If an SD card is mounted, the same event is also appended to `/faults.csv`.
 
-If a card is mounted: file `/faults.csv` on the card. The Log page shows the full CSV. Export downloads it. Clear rewrites the header only.
+If a card is mounted: file `/faults.csv` on the card. The Log page shows the full CSV. Export downloads it. Clear rewrites the SD header and also empties the 32-entry RAM ring.
 
 ```
 uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA
@@ -380,7 +380,7 @@ DC rows fill `power_W`; AC rows fill `power_VA`; the other column is blank. Powe
 
 Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`, `NO_CURRENT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Older 4- or 5-column rows still parse; missing columns read as blank.
 
-No card: the Log page shows the RAM ring and a yellow/amber banner **RAM buffer only — logs lost on reboot**. Export / Clear stay SD-only (they are hidden). Motors still protect. The OLED Fault Log uses the same RAM ring (also lost on reboot). Fault logs are never written to NVS.
+No card: the Log page shows the RAM ring and a yellow/amber banner **RAM buffer only — logs lost on reboot**. Export stays SD-only (hidden). Clear empties the RAM ring (always available). Motors still protect. The OLED Fault Log uses the same RAM ring (also lost on reboot). Fault logs are never written to NVS.
 
 ### 5.5 Buzzer patterns
 

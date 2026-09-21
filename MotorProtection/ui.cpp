@@ -837,6 +837,7 @@ void uiTask(void *arg) {
     }
     if ((uint32_t)(now - render_last) >= UI_REFRESH_MS) {
       render_last = now;
+      rebuildMotorOrder();
       renderScreen();
     }
     vTaskDelay(pdMS_TO_TICKS(3));

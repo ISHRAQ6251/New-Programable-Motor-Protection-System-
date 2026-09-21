@@ -301,7 +301,7 @@ Desktop-only UI (wide table layout, not mobile-first). Four operator pages plus 
 1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), live DC voltage (em dash for AC), power (true `W` for DC, apparent `VA` for AC) with session energy, thermal load % (hottest phase), last fault tag, Start/Stop, Reset (enabled in Fault or Cooling). A meta line shows ADS1115 ok/missing. Poll `GET /api/status` about once per second. See `2026-09-14-power-display-design.md`.
 2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip). AC shows mains Hz + rated AC voltage; DC shows optional UV/OV (0 = off). Stall-recovery checkbox (jam release; default off).
 3. Edit / delete — same fields as add.
-4. Log — SD CSV when mounted; otherwise the 32-entry RAM ring with `ram_only` and a “RAM buffer only — logs lost on reboot” banner. Export CSV / clear are SD-only.
+4. Log — SD CSV when mounted; otherwise the 32-entry RAM ring with `ram_only` and a “RAM buffer only — logs lost on reboot” banner. Export CSV is SD-only. Clear empties the RAM ring always, and also rewrites the SD header when a card is mounted.
 5. Security — change dashboard username/password.
 
 Implementation notes:
