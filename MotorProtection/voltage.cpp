@@ -209,6 +209,8 @@ void voltageCalibrateAll(ChannelRuntime *ch) {
     ch[i].last_v = 0;
     ch[i].v_calibrated = 0;
     ch[i].v_zero = 0;
+    ch[i].v_filt = 0;
+    ch[i].v_filt_valid = 0;
     const int chip = chipOf(i);
     if (!s_ok[chip]) {
       continue;
@@ -247,15 +249,28 @@ VoltageSample voltageSample(int ch, const ChannelRuntime *rt) {
   if (!s_ok[chip]) {
     return r;
   }
-  float vadc = 0;
-  if (!readAdcVolts(chip, ainOf(ch), &vadc)) {
+  double acc = 0;
+  int n = 0;
+  uint8_t bad = 0;
+  for (int k = 0; k < V_AVG_SAMPLES; k++) {
+    float vadc = 0;
+    if (!readAdcVolts(chip, ainOf(ch), &vadc)) {
+      continue;
+    }
+    acc += (double)vadc;
+    n++;
+    if (vadc > VADC_ABS_MAX || vadc < -0.05f) {
+      bad = 1;
+    }
+  }
+  if (n == 0) {
     return r;
   }
   r.present = 1;
-  r.v_adc = vadc;
+  r.v_adc = (float)(acc / (double)n);
   r.v_bus = (r.v_adc - rt->v_zero) * VDIV_SCALE;
   r.fault = 0;
-  if (r.v_adc > VADC_ABS_MAX || r.v_adc < -0.05f || fabsf(r.v_bus) > VBUS_CAP) {
+  if (bad || r.v_adc > VADC_ABS_MAX || r.v_adc < -0.05f || fabsf(r.v_bus) > VBUS_CAP) {
     r.fault = 1;
   }
   return r;
