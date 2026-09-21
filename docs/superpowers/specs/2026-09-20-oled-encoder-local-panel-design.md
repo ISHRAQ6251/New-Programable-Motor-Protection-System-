@@ -16,20 +16,24 @@ the command queue, and the same Start gate.
 |---|---|
 | Display | SH1106 128×64 I²C, default address **0x3C** |
 | Display bus | Shared ADS1115 I²C bus `Wire` — GPIO 14 SDA / 42 SCL |
-| Encoder | KY-040, GPIO 47 CLK / 48 DT / 46 SW |
+| Encoder | KY-040, GPIO 47 CLK / 46 DT / 19 SW |
+| Status LED | Onboard WS2812, GPIO 48, one-wire (never `s_i2c_mu`) |
 | Buzzer | existing LEDC buzzer on GPIO 21 |
 
 GPIO 22–25 do not exist on ESP32-S3. GPIO 46 is input-only/strapping (ROM extra
-boot-log text only) and is used deliberately as ENC_SW — a button, never an
-output. The OLED shares the ADS1115 bus; `s_i2c_mu` serializes every Wire
-transaction and is never held across `delay()` or drawing.
+boot-log text only) and is ENC_B (DT). GPIO 19 is ENC_SW because this board
+programs and talks Serial through the UART bridge (43/44), not native USB.
+GPIO 48 is the onboard WS2812, not an encoder pin. The OLED shares the ADS1115
+bus; `s_i2c_mu` serializes every Wire transaction and is never held across
+`delay()` or drawing. The LED never takes that mutex.
 
 KY-040 wiring: the module has its own pull-ups on CLK/DT/SW, so the pins are
 configured as plain `INPUT`. No internal pull-ups, no external resistors.
 
 ## Library
 
-U8g2, using `U8G2_SH1106_128X64_NONAME_F_HW_I2C` (primary hardware I²C). Pins are
+U8g2 for the SH1106, Adafruit NeoPixel for the GPIO 48 WS2812. U8g2 uses
+`U8G2_SH1106_128X64_NONAME_F_HW_I2C` (primary hardware I²C). Pins are
 set via `Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL)` — there are no `OLED_SDA_PIN` /
 `OLED_SCL_PIN` constants. Initialization:
 
@@ -60,7 +64,9 @@ state only through `protectionSnapshot()` and `protectionCopyLog()`. It never
 samples ADC/ADS and never writes relays.
 
 The loop polls the encoder every ~3 ms; the display refreshes every ~160 ms or on
-an event.
+an event. RUNNING / FAULT / COOLING icon frames advance every ~450 ms, independent
+of the 160 ms refresh. The WS2812 is updated from the same `protectionSnapshot()`
+used by Home / Per-motor; it never takes `s_i2c_mu`.
 
 ## Input model
 
@@ -93,10 +99,11 @@ All screens share: a slim header (title + fault-count badge + SoftAP icon), a
 thin right-edge scrollbar when content overflows, inverted (black-on-white)
 selection, and a segmented thermal bar.
 
-1. **Boot splash** — wipe-reveal of the project name, then a live checklist of
-   relay fail-safe, ADS1115 probe, SD mount, calibration. `setup()` publishes
-   stages through `uiBootStage()` / `uiBootNote()`; the splash auto-advances to
-   Home ~1.2 s after `UI_BOOT_DONE`. No input.
+1. **Boot splash** — centered wipe-reveal of the project name, then a live
+    checklist of relay fail-safe, ADS1115 probe, SD mount, calibration. `setup()`
+    publishes stages through `uiBootStage()` / `uiBootNote()`; the splash
+    auto-advances to Home ~1.2 s after `UI_BOOT_DONE`. No input. LED stays off
+    until Home (protection snapshot is not taken during splash).
 2. **Home** — one compact row per configured motor (status icon + name), then
    Fault Log / Diagnostics / Firmware Info / Network Info.
 3. **Per-motor** — status icon (+ fault-type text when Fault), live current,
@@ -110,11 +117,16 @@ selection, and a segmented thermal bar.
 
 ## Status representation
 
-- Four 8×8 XBM icons, one per `MotorStatus`: stopped square, running triangle,
-  fault warning triangle, cooling snowflake. Used everywhere a status is shown.
+- Four 8×8 XBM icons, one per `MotorStatus`. STOPPED is a static square.
+  RUNNING / FAULT / COOLING each have 3 frames cycled every ~450 ms.
 - A `FaultType` never gets its own icon. It is the fault warning triangle plus a
   short word: `I2T`, `STALL`, `SENSOR`, `UNDER-V`, `OVER-V`, `NO-I`.
 - A small AP glyph lives in the header.
+- Onboard WS2812 (GPIO 48) follows the worst motor: Fault > Running > Cooling >
+  Stopped (off if none or all Stopped). Fault colour by type (STALL red, SENSOR
+  magenta, NO_CURRENT cyan, OVERVOLT white, UNDERVOLT yellow, I2T orange),
+  flashing ~2 Hz. Running is a 5-stop thermal gradient (blue→cyan→green→yellow
+  →orange) from the hottest RUNNING motor. Cooling flashes blue.
 
 ## Safety-critical shared gate
 

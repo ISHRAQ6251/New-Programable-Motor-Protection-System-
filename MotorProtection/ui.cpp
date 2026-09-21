@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <Adafruit_NeoPixel.h>
 #include <stdio.h>
 #include <string.h>
 #include "ui.h"
@@ -20,8 +21,10 @@
 // Every raw Wire transaction is held under i2cLock()/i2cUnlock() only for the
 // duration of that call.
 static U8G2_SH1106_128X64_NONAME_F_HW_I2C s_oled(U8G2_R0, U8X8_PIN_NONE);
+static Adafruit_NeoPixel s_led(1, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 #define UI_REFRESH_MS     160
+#define UI_ICON_MS        450
 #define UI_SW_DEBOUNCE_MS 40
 #define UI_LONG_MS        600
 #define UI_MSG_MS         2200
@@ -56,6 +59,7 @@ static uint32_t s_msg_until = 0;
 static char s_net_user[AUTH_USER_LEN] = "";
 static char s_net_pass[AUTH_PASS_LEN] = "";
 static bool s_net_loaded = false;
+static uint8_t s_icon_frame = 0;
 
 // --- quadrature decoder -----------------------------------------------------
 // State-table decoder: a single physical detent accumulates to +/-4 before an
@@ -81,10 +85,11 @@ enum { EV_NONE = 0, EV_CW, EV_CCW, EV_SHORT, EV_LONG };
 // --- small helpers ----------------------------------------------------------
 
 static const uint8_t *statusIcon(MotorStatus st) {
+  const uint8_t f = (uint8_t)(s_icon_frame % 3);
   switch (st) {
-    case MST_RUNNING: return ICON_RUNNING;
-    case MST_FAULT:   return ICON_FAULT;
-    case MST_COOLING: return ICON_COOLING;
+    case MST_RUNNING: return ICON_RUNNING_F[f];
+    case MST_FAULT:   return ICON_FAULT_F[f];
+    case MST_COOLING: return ICON_COOLING_F[f];
     default:          return ICON_STOPPED;
   }
 }
@@ -156,6 +161,107 @@ static void loadNet() {
   }
 }
 
+static int faultRank(FaultType ft) {
+  switch (ft) {
+    case FT_STALL:      return 6;
+    case FT_SENSOR:     return 5;
+    case FT_NO_CURRENT: return 4;
+    case FT_OVERVOLT:   return 3;
+    case FT_UNDERVOLT:  return 2;
+    case FT_I2T:        return 1;
+    default:            return 0;
+  }
+}
+
+static uint32_t lerpRgb(uint32_t a, uint32_t b, float t) {
+  if (t < 0) {
+    t = 0;
+  }
+  if (t > 1) {
+    t = 1;
+  }
+  const int ar = (int)((a >> 16) & 0xFF);
+  const int ag = (int)((a >> 8) & 0xFF);
+  const int ab = (int)(a & 0xFF);
+  const int br = (int)((b >> 16) & 0xFF);
+  const int bg = (int)((b >> 8) & 0xFF);
+  const int bb = (int)(b & 0xFF);
+  const uint8_t r = (uint8_t)(ar + (int)((br - ar) * t));
+  const uint8_t g = (uint8_t)(ag + (int)((bg - ag) * t));
+  const uint8_t bl = (uint8_t)(ab + (int)((bb - ab) * t));
+  return s_led.Color(r, g, bl);
+}
+
+static uint32_t thermalColor(float pct) {
+  if (pct < 0) {
+    pct = 0;
+  }
+  if (pct > 100) {
+    pct = 100;
+  }
+  static const uint32_t stops[5] = {
+    0x0000FF, 0x00FFFF, 0x00FF00, 0xFFFF00, 0xFF8000
+  };
+  const int seg = (pct >= 100.0f) ? 3 : (int)(pct / 25.0f);
+  const float t = (pct - (float)seg * 25.0f) / 25.0f;
+  return lerpRgb(stops[seg], stops[seg + 1], t);
+}
+
+static uint32_t faultColor(FaultType ft) {
+  switch (ft) {
+    case FT_STALL:      return s_led.Color(255, 0, 0);
+    case FT_I2T:        return s_led.Color(255, 140, 0);
+    case FT_SENSOR:     return s_led.Color(255, 0, 255);
+    case FT_UNDERVOLT:  return s_led.Color(255, 255, 0);
+    case FT_OVERVOLT:   return s_led.Color(255, 255, 255);
+    case FT_NO_CURRENT: return s_led.Color(0, 255, 255);
+    default:            return s_led.Color(255, 0, 0);
+  }
+}
+
+static void updateStatusLed(const StatusSnapshot &snap) {
+  MotorStatus worst = MST_STOPPED;
+  FaultType worst_ft = FT_NONE;
+  float hottest = 0;
+  bool any = false;
+  for (int i = 0; i < MAX_MOTORS; i++) {
+    if (!snap.motors[i].used) {
+      continue;
+    }
+    any = true;
+    const MotorStatus st = snap.rt[i].status;
+    if (st == MST_FAULT && worst != MST_FAULT) {
+      worst = MST_FAULT;
+      worst_ft = snap.rt[i].last_fault;
+    } else if (st == MST_FAULT) {
+      if (faultRank(snap.rt[i].last_fault) > faultRank(worst_ft)) {
+        worst_ft = snap.rt[i].last_fault;
+      }
+    } else if (st == MST_RUNNING && worst != MST_FAULT) {
+      worst = MST_RUNNING;
+      if (snap.thermal_pct[i] > hottest) {
+        hottest = snap.thermal_pct[i];
+      }
+    } else if (st == MST_COOLING && worst != MST_FAULT && worst != MST_RUNNING) {
+      worst = MST_COOLING;
+    }
+  }
+  if (!any || worst == MST_STOPPED) {
+    s_led.setPixelColor(0, 0);
+    s_led.show();
+    return;
+  }
+  const bool flash_on = ((millis() / 250) & 1u) != 0;
+  if (worst == MST_FAULT) {
+    s_led.setPixelColor(0, flash_on ? faultColor(worst_ft) : 0);
+  } else if (worst == MST_COOLING) {
+    s_led.setPixelColor(0, flash_on ? s_led.Color(0, 0, 255) : 0);
+  } else {
+    s_led.setPixelColor(0, thermalColor(hottest));
+  }
+  s_led.show();
+}
+
 // --- drawing primitives -----------------------------------------------------
 
 static void drawHeader(const char *title, int faults) {
@@ -163,10 +269,10 @@ static void drawHeader(const char *title, int faults) {
   s_oled.drawStr(2, 10, title);
   if (faults > 0) {
     char b[8];
-    s_oled.drawXBMP(96, 2, 8, 8, ICON_FAULT);
+    s_oled.drawXBMP(96, 2, 8, 8, statusIcon(MST_FAULT));
     s_oled.setFont(F_SMALL);
     snprintf(b, sizeof(b), "%d", faults);
-    s_oled.drawStr(105, 10, b);
+    s_oled.drawStr(106, 10, b);
   }
   s_oled.drawXBMP(118, 2, 8, 8, ICON_AP);
   s_oled.drawHLine(0, 12, 128);
@@ -214,6 +320,12 @@ static void drawThermalBar(int x, int y, int w, int h, float pct) {
 
 // --- screens ----------------------------------------------------------------
 
+static int centerX(const char *s) {
+  const int w = s_oled.getStrWidth(s);
+  int x = (128 - w) / 2;
+  return x < 0 ? 0 : x;
+}
+
 static void renderSplash() {
   const uint32_t elapsed = millis() - s_ui_start_ms;
   int reveal = (int)(elapsed / 6);
@@ -221,19 +333,20 @@ static void renderSplash() {
     reveal = 128;
   }
   s_oled.setFont(u8g2_font_helvB10_tr);
-  s_oled.drawStr(16, 22, "MPS-505");
+  s_oled.drawStr(centerX("MPS-505"), 22, "MPS-505");
   s_oled.setFont(F_SMALL);
-  s_oled.drawStr(16, 34, s_boot_note[0] ? s_boot_note : "Motor Protection");
+  const char *note = s_boot_note[0] ? s_boot_note : "Motor Protection";
+  s_oled.drawStr(centerX(note), 34, note);
   s_oled.setDrawColor(0);
   s_oled.drawBox(0, 10, 128 - reveal, 30);
   s_oled.setDrawColor(1);
 
   static const char *labels[4] = {"Relay fail-safe", "ADS1115 probe", "SD card", "Calibration"};
   for (int i = 0; i < 4; i++) {
-    const int y = 44 + i * 5;
-    s_oled.drawStr(4, y, labels[i]);
+    const int y = 43 + i * 5;
+    s_oled.drawStr(2, y, labels[i]);
     if ((int)s_boot_stage >= i + 1) {
-      s_oled.drawStr(108, y, "ok");
+      s_oled.drawStr(110, y, "ok");
     }
   }
 }
@@ -263,17 +376,17 @@ static void renderHome(const StatusSnapshot &snap) {
     const int y = 14 + j * 12;
     const bool sel = (row == s_home_sel);
     if (sel) {
-      s_oled.drawBox(0, y, 124, 11);
+      s_oled.drawBox(0, y, 124, 12);
       s_oled.setDrawColor(0);
     }
     if (row < s_motor_n) {
       const int mi = s_motor_order[row];
-      s_oled.drawXBMP(2, y + 1, 8, 8, statusIcon(snap.rt[mi].status));
+      s_oled.drawXBMP(2, y + 2, 8, 8, statusIcon(snap.rt[mi].status));
       s_oled.setFont(F_BODY);
-      s_oled.drawStr(13, y + 9, snap.motors[mi].name);
+      s_oled.drawStr(13, y + 10, snap.motors[mi].name);
     } else {
       s_oled.setFont(F_BODY);
-      s_oled.drawStr(13, y + 9, menus[row - s_motor_n]);
+      s_oled.drawStr(13, y + 10, menus[row - s_motor_n]);
     }
     if (sel) {
       s_oled.setDrawColor(1);
@@ -286,7 +399,7 @@ static void renderMotor(const StatusSnapshot &snap) {
   if (s_motor_n == 0) {
     drawHeader("Motors", 0);
     s_oled.setFont(F_BODY);
-    s_oled.drawStr(4, 34, "No motors configured");
+    s_oled.drawStr(centerX("No motors configured"), 34, "No motors configured");
     return;
   }
   if (s_motor_sel >= s_motor_n) {
@@ -341,7 +454,7 @@ static void renderFaultLog() {
   drawHeader("Fault Log", 0);
   if (n == 0) {
     s_oled.setFont(F_BODY);
-    s_oled.drawStr(4, 34, "No trips logged");
+    s_oled.drawStr(centerX("No trips logged"), 34, "No trips logged");
     return;
   }
   const int visible = UI_VIS_FAULT;
@@ -393,7 +506,7 @@ static void renderDiag(const StatusSnapshot &snap) {
   drawHeader("Diagnostics", 0);
   s_oled.setFont(F_SMALL);
   char b[48];
-  int y = 21;
+  int y = 22;
   for (int chip = 0; chip < 2; chip++) {
     const uint8_t addr = chip ? ADS1115_ADDR_B : ADS1115_ADDR_A;
     if (snap.ads_ok[chip]) {
@@ -468,6 +581,7 @@ static void renderScreen() {
   } else {
     StatusSnapshot snap;
     protectionSnapshot(&snap);
+    updateStatusLed(snap);
     switch (s_screen) {
       case SC_HOME:     renderHome(snap); break;
       case SC_MOTOR:    renderMotor(snap); break;
@@ -680,6 +794,11 @@ void uiBegin() {
   s_sw_last = (uint8_t)digitalRead(ENC_SW_PIN);
   s_sw_stable = s_sw_last;
 
+  s_led.begin();
+  s_led.setBrightness(40);
+  s_led.setPixelColor(0, 0);
+  s_led.show();
+
   i2cLock();
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   Wire.setClock(OLED_I2C_HZ);
@@ -702,6 +821,7 @@ void uiBegin() {
 void uiTask(void *arg) {
   (void)arg;
   uint32_t render_last = 0;
+  uint32_t icon_last = 0;
   for (;;) {
     handleEvent(pollEvents());
     const uint32_t now = millis();
@@ -710,6 +830,10 @@ void uiTask(void *arg) {
       rebuildMotorOrder();
       s_screen = SC_HOME;
       render_last = 0;
+    }
+    if ((uint32_t)(now - icon_last) >= UI_ICON_MS) {
+      icon_last = now;
+      s_icon_frame = (uint8_t)((s_icon_frame + 1) % 3);
     }
     if ((uint32_t)(now - render_last) >= UI_REFRESH_MS) {
       render_last = now;

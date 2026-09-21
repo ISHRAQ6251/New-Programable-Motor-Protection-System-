@@ -15,6 +15,7 @@
  *   Adafruit ADS1X15
  *   Adafruit BusIO     (dependency of ADS1X15)
  *   U8g2               (for the local SH1106 OLED panel)
+ *   Adafruit NeoPixel  (onboard WS2812 status LED on GPIO 48)
  *
  * SoftAP: MPS-505 / mps50005   dashboard: http://192.168.4.1
  * Default dashboard login: mps / mps500  (themed /login page, session cookie)

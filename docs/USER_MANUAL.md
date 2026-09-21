@@ -14,7 +14,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 - Motor settings live in on-chip flash (NVS). They survive power cycles even if the SD card is missing.
 - The SD card is used **only** for a fault-history CSV. Missing card: protection and dashboard still run; the Log page shows "unavailable".
 - Access is local Wi-Fi only: the ESP32 creates network `MPS-505`. There is no router join, no cloud, no DDNS.
-- A local **SH1106 OLED + KY-040 encoder** panel shows status and allows Start/Stop at the enclosure. The dashboard stays the full configuration UI (motor add/edit, security).
+- A local **SH1106 OLED + KY-040 encoder** panel shows status and allows Start/Stop at the enclosure. The onboard WS2812 (GPIO 48) is a status LED. The dashboard stays the full configuration UI (motor add/edit, security).
 
 ---
 
@@ -33,6 +33,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 | SD | RoboticsBD 3.3 V Micro SD breakout, SPI, no onboard regulator |
 | Buzzer | 1x passive (PWM) |
 | DC voltage | 2× ADS1115 (I²C), 150 k / 10 k divider per channel |
+| Local panel | SH1106 128x64 OLED (I²C 0x3C) + KY-040 encoder + onboard WS2812 (GPIO 48) |
 
 Power the ESP32 from USB or a 5 V supply that shares ground with the ACS712 boards and relay modules. The SD breakout is **3.3 V only** — do not feed it 5 V.
 
@@ -45,9 +46,9 @@ Do not use these GPIOs for sensors or relays:
 | 22–25 | Do not exist on this chip at all (not physical pins) |
 | 26–37 | Reserved for flash / octal PSRAM on this N16R8 module |
 | 0, 3, 45 | Strapping pins (boot-mode / flash / JTAG) — fully off-limits |
-| 46 | Input-only strapping pin (ROM extra boot-log text only, unrelated to boot/flash/JTAG). Used here deliberately as ENC_SW (a button, never an output). Distinct from 0/3/45. |
-| 19, 20 | USB-JTAG |
-| 43, 44 | UART0 Serial monitor |
+| 46 | Input-only strapping pin (ROM extra boot-log text only, unrelated to boot/flash/JTAG). Used here as ENC_B (DT) only. Distinct from 0/3/45. |
+| 20 | Native USB D+ on silicon; unused on this board (programming/Serial go through the UART bridge) |
+| 43, 44 | UART0 Serial monitor — do not reassign |
 
 Current-sense pins are all **ADC1**. ADC2 is unreliable while Wi-Fi is on.
 
@@ -81,9 +82,10 @@ All GPIO numbers exist only in `MotorProtection/config_pins.h`. Changing a pin m
 | I²C SDA | 14 | I²C | Shared ADS1115 + SH1106 — not ESP32 default GPIO 8 |
 | I²C SCL | 42 | I²C | Shared ADS1115 + SH1106 — not ESP32 default GPIO 9 |
 | Encoder CLK | 47 | Digital in | KY-040 A, plain `INPUT` (module pull-up) |
-| Encoder DT | 48 | Digital in | KY-040 B |
-| Encoder SW | 46 | Digital in | KY-040 switch, active-LOW. GPIO 46 is input-only/strapping; used deliberately as a button (never an output). |
-| USB / Serial | 19, 20, 43, 44 | reserved | Do not reassign |
+| Encoder DT | 46 | Digital in | KY-040 B. GPIO 46 is input-only/strapping; encoder line only. |
+| Encoder SW | 19 | Digital in | KY-040 switch, active-LOW. Native USB unused on this board; programming/Serial go through UART 43/44. |
+| Status LED | 48 | One-wire | Onboard WS2812. Not I²C — never take `s_i2c_mu`. |
+| UART0 Serial | 43, 44 | reserved | Do not reassign |
 
 ### 2.4 Analog front-end (every current channel)
 
@@ -210,6 +212,7 @@ Open the sketch folder `MotorProtection/` (the `.ino` plus the `.cpp` / `.h` fil
 | **Adafruit ADS1X15** | Adafruit | Yes (DC voltage) |
 | **Adafruit BusIO** | Adafruit | Yes (dependency of ADS1X15) |
 | **U8g2** | olikraus | Yes (local OLED panel) |
+| **Adafruit NeoPixel** | Adafruit | Yes (onboard WS2812 status LED on GPIO 48) |
 
 Built in with the ESP32 core (do not install separately):
 
@@ -368,9 +371,9 @@ No card: Log page shows a yellow banner. Motors still protect.
 | UI click | 20 ms tick |
 | Panel back (long press) | Short two-note descending blip |
 
-### 5.6 Local panel (SH1106 OLED + KY-040 encoder)
+### 5.6 Local panel (SH1106 OLED + KY-040 encoder + WS2812)
 
-The panel gives at-a-glance status and Start/Stop without a laptop. It is optional: if the OLED is missing the firmware keeps running and the web dashboard still works.
+The panel gives at-a-glance status and Start/Stop without a laptop. It is optional: if the OLED is missing the firmware keeps running and the web dashboard still works. Encoder is CLK 47 / DT 46 / SW 19. GPIO 48 is the onboard WS2812 status LED (one-wire, not I²C).
 
 Controls:
 
@@ -388,7 +391,9 @@ Screens:
 - **Firmware Info** — build date/time and uptime.
 - **Network Info** — SoftAP SSID/password, AP IP, and the dashboard login.
 
-Status is shown as an icon: square = Stopped, triangle = Running, warning triangle = Fault, snowflake = Cooling. A fault also shows a short word (`I2T`, `STALL`, `SENSOR`, `UNDER-V`, `OVER-V`, `NO-I`).
+Status is shown as an icon: square = Stopped (static), chevron = Running, warning triangle = Fault, snowflake = Cooling. RUNNING / FAULT / COOLING cycle three frames about every 450 ms. A fault also shows a short word (`I2T`, `STALL`, `SENSOR`, `UNDER-V`, `OVER-V`, `NO-I`).
+
+The onboard LED follows the worst motor: Fault > Running > Cooling > Stopped (off if none or all Stopped). Fault colour is STALL red, SENSOR magenta, NO_CURRENT cyan, OVERVOLT white, UNDERVOLT yellow, I2T orange, flashing at about 2 Hz. Running uses a blue→cyan→green→yellow→orange thermal gradient from the hottest motor. Cooling flashes blue.
 
 A Start is refused with a short on-screen reason and a fault beep when a DC motor's ADS1115 or voltage calibration is not ready — the same rule the dashboard enforces.
 
@@ -413,8 +418,8 @@ protection.cpp          I²t / stall / UV / OV / sensor-fault / NO_CURRENT / pow
 motor_store.cpp         NVS blob + login credentials
 net_ap.cpp              SoftAP MPS-505 / mps50005
 sd_log.cpp              Optional /faults.csv
-ui.cpp / ui.h           Local panel: uiTask, OLED + encoder, boot splash + screens
-ui_icons.h              8x8 XBM status and AP icons
+ui.cpp / ui.h           Local panel: uiTask, OLED + encoder + WS2812 LED, boot splash + screens
+ui_icons.h              8x8 XBM status (3-frame RUNNING/FAULT/COOLING) and AP icons
 web.cpp / web_html.h    Async HTTP, session login, dashboard HTML
 ```
 
@@ -432,7 +437,7 @@ Boot order in `setup()` (order matters for fail-safe):
 Three tasks after boot:
 
 - **Protection task** — sample current ADC and ADS1115 **outside** the status mutex, then apply I²t / stall / UV / OV / sensor-fault. Never writes SD or HTTP.
-- **`uiTask`** — core 0: poll the encoder, render the OLED, and post Start/Stop through the shared gate. Reads state only through the snapshot.
+- **`uiTask`** — core 0: poll the encoder, render the OLED, drive the GPIO 48 WS2812, and post Start/Stop through the shared gate. Reads state only through the snapshot.
 - **`loop()`** — play queued buzzer tones, append SD log lines, keep the async web server running.
 
 Web handlers and the local panel enqueue `START` / `STOP` / `RESET` / `CALIBRATE` / `RELOAD`. Both read a mutex-guarded snapshot (RMS, DC volts, status, thermal %, heap, SD flag, ADS ok) and share `protectionCanStart()` before a Start.
@@ -586,7 +591,8 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 always 0x48, CH4–7 always 0x49. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
 | `I2C: diag ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / SDA-SCL swap / missing pull-ups |
 | OLED blank / no local panel | U8g2 not installed, wrong address, or bus contention | Confirm 0x3C on the shared Wire bus (GPIO 14/42). Constructor is `U8G2_SH1106_128X64_NONAME_F_HW_I2C` |
-| Encoder direction reversed | CLK/DT swapped for your module | Swap the CLK and DT wires. Bounce is already absorbed by the state-table decoder |
+| Encoder direction reversed | CLK/DT swapped for your module | Swap the CLK and DT wires (CLK 47 / DT 46 / SW 19). Bounce is already absorbed by the state-table decoder |
+| Status LED dark or wrong colour | Adafruit NeoPixel not installed, or GPIO 48 used as encoder DT | Install NeoPixel. GPIO 48 is the WS2812 only — encoder DT is GPIO 46 |
 | Panel shows `DC start needs the ADS1115…` | Same DC-readiness gate as the dashboard | Populate/repair the ADS1115, then press Calibrate |
 | Login page rejects mps / mps500 after a flash that printed `dash pass: mps50005` | NVS `auth_pass` was the AP password | This build restores `mps500` when `auth_pass` equals the AP password |
 | Live DC V stuck at 0 with motor running | Tap is upstream of the relay, or not calibrated | Tap **downstream** of the relay. Calibrate with motors Stopped |

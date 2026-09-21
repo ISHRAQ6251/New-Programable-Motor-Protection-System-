@@ -91,7 +91,7 @@ No GPIO literals outside `config_pins.h`.
 
 ## 4. Hardware and pin map
 
-Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits (strapping / boot / JTAG). GPIO 46 is input-only/strapping but is used deliberately as ENC_SW only. Also avoid 19/20 (USB-JTAG), 43/44 (UART0).
+Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits (strapping / boot / JTAG). GPIO 46 is input-only/strapping and is ENC_B (DT). GPIO 19 is ENC_SW (native USB unused; programming/Serial go through UART 43/44). GPIO 48 is the onboard WS2812. GPIO 43/44 stay untouched.
 
 | Function | GPIO | Notes |
 |---|---|---|
@@ -119,8 +119,9 @@ Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physi
 | I²C SDA | 14 | Shared ADS1115 + SH1106 — explicit `Wire.begin(14, 42)`, not default 8/9 |
 | I²C SCL | 42 | Shared ADS1115 + SH1106 |
 | Encoder CLK | 47 | KY-040 A |
-| Encoder DT | 48 | KY-040 B |
-| Encoder SW | 46 | KY-040 switch; GPIO 46 input-only, used as a button only |
+| Encoder DT | 46 | KY-040 B; GPIO 46 input-only, encoder line only |
+| Encoder SW | 19 | KY-040 switch; native USB unused on this board |
+| Status LED | 48 | Onboard WS2812, one-wire — never take `s_i2c_mu` |
 
 Analog path (current):
 
@@ -350,6 +351,8 @@ These were not named by the user; they are the natural Arduino-IDE match for the
 - Arduino-ESP32 3.x board package, board = "ESP32S3 Dev Module", PSRAM = "OPI PSRAM", Flash = 16 MB
 - `ESPAsyncWebServer` + `AsyncTCP` (ESP32Async / compatible Arduino-ESP32 3.x build)
 - `Adafruit ADS1X15` + `Adafruit BusIO` (DC voltage)
+- `U8g2` (SH1106 local panel)
+- `Adafruit NeoPixel` (onboard WS2812 on GPIO 48)
 - Built-in: `WiFi`, `Preferences` (NVS), `SD`, `SPI`, `FS`, `Wire`, `esp32-hal-ledc`
 
 If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32Async fork without changing the HTTP API.

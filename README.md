@@ -21,7 +21,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - **Power** display and fault-log columns: true `W` for DC (`V × I`), apparent `VA` at rated V for AC (PF unknown, never shown as `W`)
 - Desktop dashboard on SoftAP `MPS-505` / `mps50005`
 - Themed `/login` page + HttpOnly session cookie (default `mps` / `mps500`)
-- Local **SH1106 OLED + KY-040 encoder** panel (status + Start/Stop) on the shared ADS1115 I²C bus, with buzzer feedback
+- Local **SH1106 OLED + KY-040 encoder** panel (status + Start/Stop) on the shared ADS1115 I²C bus, onboard WS2812 on GPIO 48, with buzzer feedback
 - Motor config in NVS; protection still runs if the SD card is missing
 - Three FreeRTOS tasks: Wi-Fi + UI on core 0, protection + `loop()` on core 1
 - Relays fail-safe OFF in `setup()` before Wi-Fi starts
@@ -41,7 +41,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 
 Zero-current and DC zero-voltage are **calibrated** at boot (relays open → 0 V at each voltage tap). Do not assume 1.5 V or 0.000 V.
 
-GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits. GPIO 46 is input-only/strapping but is used deliberately as ENC_SW only. Also avoid 19/20 (USB-JTAG), 43/44 (UART0 Serial). Current-sense pins are ADC1 only. **Do not use ESP32 default I²C GPIO 8/9** — those are current-sense CH6/CH7.
+GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits. GPIO 46 is input-only/strapping and is ENC_B (DT). GPIO 19 is ENC_SW (native USB unused; programming/Serial go through UART 43/44). GPIO 48 is the onboard WS2812. Current-sense pins are ADC1 only. **Do not use ESP32 default I²C GPIO 8/9** — those are current-sense CH6/CH7.
 
 ### Pin map
 
@@ -54,7 +54,8 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 |
 | Buzzer | 21 |
 | I²C SDA / SCL | **14 / 42** (shared ADS1115 + SH1106) |
-| Encoder CLK / DT / SW | 47 / 48 / 46 |
+| Encoder CLK / DT / SW | 47 / 46 / 19 |
+| Status LED | 48 (onboard WS2812) |
 
 ## Protection logic (short)
 
@@ -87,7 +88,7 @@ Power: DC `P = Vdc × I_dc` (`W`); AC 1-phase `S = V_rated × I_rms` (`VA`); AC 
 
 1. Install **esp32 by Espressif Systems** (Arduino-ESP32 **3.x**) from Boards Manager.
 2. Board: **ESP32S3 Dev Module**. Flash **16MB (128Mb)**. PSRAM **OPI PSRAM**. Core Debug Level **Debug**.
-3. Library Manager: **ESPAsyncWebServer** and **AsyncTCP** (ESP32Async forks), **Adafruit ADS1X15** and **Adafruit BusIO**, **U8g2** (local OLED panel).
+3. Library Manager: **ESPAsyncWebServer** and **AsyncTCP** (ESP32Async forks), **Adafruit ADS1X15** and **Adafruit BusIO**, **U8g2** (local OLED panel), **Adafruit NeoPixel** (GPIO 48 WS2812).
 4. Open the sketch folder `MotorProtection/` and upload.
 
 Built-in (do not install separately): WiFi, Preferences, SD, SPI, LEDC.
@@ -181,6 +182,7 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - NVS schema 2
 - Local panel: SH1106 128x64 on `Wire1` (GPIO 25/47) + KY-040 encoder on 22/23/24; shared `protectionCanStart()` gate; `toneBack()`; U8g2 (2026-09-20)
 - 2026-09-21 pin/bus correction: encoder 47/48/46; OLED shares ADS1115 `Wire` 14/42; `s_i2c_mu` serializes every Wire transaction; GPIO 22–25 are not physical pins
+- 2026-09-21 encoder off GPIO 48: CLK 47 / DT 46 / SW 19; NeoPixel status LED on GPIO 48; 3-frame status icons
 
 ## License
 
