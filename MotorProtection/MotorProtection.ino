@@ -41,10 +41,21 @@ void setup() {
   Serial.println("MPS-505 boot...");
   Serial.flush();
 
+  voltageI2cMutexInit();
+  buzzerMutexInit();
+  motorStoreMutexInit();
+  protectionMutexInit();
+  webMutexInit();
+
+  Serial.println("init: relays...");
   relaysBegin();
+  Serial.println("init: buzzer...");
   buzzerBegin();
+  Serial.println("init: UI...");
   uiBegin();
+  Serial.println("init: sensing...");
   sensingBegin();
+  Serial.println("init: voltage...");
   voltageBegin();
   {
     char note[48];
@@ -53,6 +64,7 @@ void setup() {
              voltageAdsOk(1) ? "ok" : "missing");
     uiBootNote(note);
   }
+  Serial.println("init: motor store...");
   motorStoreBegin();
   {
     MotorRecord motors[MAX_MOTORS];
@@ -76,13 +88,17 @@ void setup() {
   }
   uiBootStage(UI_BOOT_RELAYS);
   uiBootStage(UI_BOOT_ADS);
+  Serial.println("init: SD log...");
   sdLogBegin();
   uiBootStage(UI_BOOT_SD);
+  Serial.println("init: protection...");
   protectionBegin();
   protectionSetSdOk(sdLogOk() ? 1 : 0);
   uiBootStage(UI_BOOT_CAL);
 
+  Serial.println("init: SoftAP...");
   netApBegin();
+  Serial.println("init: web...");
   webBegin();
 
   xTaskCreatePinnedToCore(protectionTask, "protect", 8192, nullptr, 5, nullptr, 1);

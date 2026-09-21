@@ -67,10 +67,13 @@ static void startSeq(const ToneStep *seq, int len, bool loop) {
   unlockSeq();
 }
 
-void buzzerBegin() {
+void buzzerMutexInit() {
   if (!s_mu) {
     s_mu = xSemaphoreCreateMutex();
   }
+}
+
+void buzzerBegin() {
   ledcAttach(PIN_BUZZER, 1000, 10);
   ledcWrite(PIN_BUZZER, 0);
 }

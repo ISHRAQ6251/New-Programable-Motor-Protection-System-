@@ -16,13 +16,14 @@ static uint8_t s_i2c_initialized = 0;
 static const uint8_t kAddr[2] = {ADS1115_ADDR_A, ADS1115_ADDR_B};
 static SemaphoreHandle_t s_i2c_mu = nullptr;
 
-void i2cLock() {
+void voltageI2cMutexInit() {
   if (!s_i2c_mu) {
     s_i2c_mu = xSemaphoreCreateMutex();
   }
-  if (s_i2c_mu) {
-    xSemaphoreTake(s_i2c_mu, portMAX_DELAY);
-  }
+}
+
+void i2cLock() {
+  xSemaphoreTake(s_i2c_mu, portMAX_DELAY);
 }
 
 void i2cUnlock() {

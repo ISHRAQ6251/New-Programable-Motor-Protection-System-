@@ -2,6 +2,7 @@
 
 #include "types.h"
 
+void buzzerMutexInit();
 void buzzerBegin();
 void buzzerRequest(ToneId id);
 void buzzerTick();

@@ -24,9 +24,9 @@ struct SampleJob {
 static MotorRecord s_motors[MAX_MOTORS];
 static MotorRuntime s_rt[MAX_MOTORS];
 static ChannelRuntime s_ch[MAX_CHANNELS];
-static QueueHandle_t s_cmd_q;
-static QueueHandle_t s_log_q;
-static SemaphoreHandle_t s_mu;
+static QueueHandle_t s_cmd_q = nullptr;
+static QueueHandle_t s_log_q = nullptr;
+static SemaphoreHandle_t s_mu = nullptr;
 static volatile ToneId s_tone = TONE_NONE;
 static volatile uint8_t s_calibrated = 0;
 static volatile uint8_t s_sd_ok = 0;
@@ -522,10 +522,19 @@ static void protectionWdtBegin() {
   }
 }
 
+void protectionMutexInit() {
+  if (!s_mu) {
+    s_mu = xSemaphoreCreateMutex();
+  }
+  if (!s_cmd_q) {
+    s_cmd_q = xQueueCreate(16, sizeof(Command));
+  }
+  if (!s_log_q) {
+    s_log_q = xQueueCreate(16, sizeof(LogEvent));
+  }
+}
+
 void protectionBegin() {
-  s_mu = xSemaphoreCreateMutex();
-  s_cmd_q = xQueueCreate(16, sizeof(Command));
-  s_log_q = xQueueCreate(16, sizeof(LogEvent));
   memset(s_motors, 0, sizeof(s_motors));
   memset(s_rt, 0, sizeof(s_rt));
   memset(s_ch, 0, sizeof(s_ch));

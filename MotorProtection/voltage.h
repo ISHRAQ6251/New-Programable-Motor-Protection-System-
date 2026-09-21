@@ -17,6 +17,7 @@ struct VoltageSample {
   uint8_t fault;
 };
 
+void voltageI2cMutexInit();
 void voltageBegin();
 void voltageReprobe();
 bool voltageAdsOk(int chip);

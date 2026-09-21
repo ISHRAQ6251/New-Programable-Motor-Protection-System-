@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include "types.h"
 
+void motorStoreMutexInit();
 void motorStoreBegin();
 void motorStoreLoad();
 bool motorStoreSave();

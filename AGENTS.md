@@ -100,7 +100,7 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
 | Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`) |
 | Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire; KY-040 on 47/46/3; WS2812 on GPIO 48; 3-frame status icons; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
-| Sketch entry | `MotorProtection.ino` | done |
+| Sketch entry | `MotorProtection.ino` | done — mutex/queue init (`voltageI2cMutexInit` / `buzzerMutexInit` / `motorStoreMutexInit` / `protectionMutexInit` / `webMutexInit`) runs before any `begin()`; `uiBegin()` starts `uiTask` only after those handles exist |
 
 Boot Serial prints AP SSID/password/IP, dashboard login (`mps` / `mps500`, **not** AP pass), and free heap (`HEAP:`). Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected.
 
@@ -204,6 +204,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - GPIO 48 is the onboard WS2812. Encoder is CLK 47 / DT 46 / SW 3. Do not drive GPIO 48 as encoder DT. The LED is one-wire — never take `s_i2c_mu` for it.
 - GPIO 19/20 are native USB D-/D+. This board uses native USB for serial (NOT a UART bridge). GPIO 19 must never be assigned as a GPIO — doing so crashes the board and breaks serial.
 - GPIO 19 is USB D-. Assigning it as encoder input crashed the board and broke serial. Moved ENC_SW to GPIO 3 (strapping-safe: JTAG source, does not affect boot mode or flash voltage; KY-040 pull-up holds it HIGH at boot).
+- `uiBegin()` starts `uiTask`, which calls `protectionSnapshot()` within 160 ms. Create `s_mu` / `s_i2c_mu` / motor-store / buzzer / web mutexes (and protection queues) before any `begin()`. Do not take those handles until `*MutexInit()` has run.
 - `uiTask` is not on the Task WDT; only the protection task is.
 - Clear Logs now clears both SD and RAM ring; if either succeeds, the button returns ok.
 - OLED rebuilds motor order every UI refresh (160 ms); motor add/edit/delete from web dashboard appears on panel without reboot.
@@ -225,6 +226,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - 2026-09-21 — Pin/bus correction: GPIO 22–25 do not exist on ESP32-S3. Encoder CLK/DT/SW moved to 47/48/46 (GPIO 46 is ENC_SW only). OLED shares the ADS1115 I²C bus (GPIO 14/42) via `U8G2_SH1106_128X64_NONAME_F_HW_I2C`; `s_i2c_mu` serializes every Wire transaction. Dropped `OLED_SDA_PIN`/`OLED_SCL_PIN`/`Wire1`.
 - 2026-09-21 — Encoder off GPIO 48 (onboard WS2812): CLK 47 / DT 46 / SW 19. NeoPixel status LED on GPIO 48 (worst-state Fault > Running > Cooling > Stopped; thermal gradient while Running; ~2 Hz fault/cooling flash). 3-frame RUNNING/FAULT/COOLING icons (~450 ms). Centered splash. Adafruit NeoPixel library.
 - 2026-09-21 — ENC_SW off GPIO 19 (USB D-): native USB CDC is the serial path on this board; `pinMode(19, INPUT)` crashed boot and broke Serial. Moved ENC_SW to GPIO 3 (strapping-safe JTAG source; KY-040 pull-up holds HIGH at boot). Early `Serial.println("MPS-505 boot...")` in `setup()`.
+- 2026-09-21 — Boot crash `xQueueSemaphoreTake` on NULL mutex: `uiBegin()` started `uiTask` before `protectionBegin()` created `s_mu`. Mutex/queue create now runs at the top of `setup()`; `init: …` Serial lines between each begin.
 - 2026-09-21 — Optional per-motor stall recovery (jam release): 3× 300/500 ms pulses after 500 ms of Running; I²t and SENSOR stay live; stall / UV / OV / NO_CURRENT skipped while `jam_phase != IDLE`. 32-entry RAM fault ring feeds the web log when SD is missing (`ram_only`). NVS schema 3.
 - 2026-09-21 — Clear Logs clears SD and RAM ring (`protectionClearLog`); OLED rebuilds motor order every 160 ms refresh; web log already served RAM with `ram_only` when SD missing.
 

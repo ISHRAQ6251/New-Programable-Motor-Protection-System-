@@ -9,7 +9,7 @@ static Preferences s_prefs;
 static MotorBlob s_blob;
 static char s_user[AUTH_USER_LEN];
 static char s_pass[AUTH_PASS_LEN];
-static SemaphoreHandle_t s_mu;
+static SemaphoreHandle_t s_mu = nullptr;
 
 static void lock() {
   if (s_mu) {
@@ -200,8 +200,13 @@ static void sanitizeLoadedBlob() {
   }
 }
 
+void motorStoreMutexInit() {
+  if (!s_mu) {
+    s_mu = xSemaphoreCreateMutex();
+  }
+}
+
 void motorStoreBegin() {
-  s_mu = xSemaphoreCreateMutex();
   strncpy(s_user, DEFAULT_AUTH_USER, AUTH_USER_LEN - 1);
   strncpy(s_pass, DEFAULT_AUTH_PASS, AUTH_PASS_LEN - 1);
   s_user[AUTH_USER_LEN - 1] = 0;

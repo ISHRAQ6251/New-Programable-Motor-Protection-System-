@@ -2,6 +2,7 @@
 
 #include "types.h"
 
+void protectionMutexInit();
 void protectionBegin();
 void protectionTask(void *arg);
 bool protectionPost(CmdType type, uint8_t motor_idx);

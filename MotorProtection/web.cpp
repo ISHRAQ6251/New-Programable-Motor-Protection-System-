@@ -14,7 +14,7 @@
 
 static AsyncWebServer s_server(80);
 static char s_json[8192];
-static SemaphoreHandle_t s_json_mu;
+static SemaphoreHandle_t s_json_mu = nullptr;
 static char s_sess[33];
 static uint32_t s_sess_exp_ms;
 static const uint32_t SESS_TTL_MS = 8ul * 3600ul * 1000ul;
@@ -695,8 +695,13 @@ static void handleLogout(AsyncWebServerRequest *req) {
   req->send(r);
 }
 
+void webMutexInit() {
+  if (!s_json_mu) {
+    s_json_mu = xSemaphoreCreateMutex();
+  }
+}
+
 void webBegin() {
-  s_json_mu = xSemaphoreCreateMutex();
   clearSession();
   s_server.on("/login", HTTP_GET, handleLoginGet);
   s_server.on("/login", HTTP_POST, handleLoginPost);
