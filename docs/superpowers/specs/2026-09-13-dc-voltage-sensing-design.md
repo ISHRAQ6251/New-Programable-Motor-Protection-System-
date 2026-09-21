@@ -64,7 +64,7 @@ DC Start is rejected if either ADS1115 is missing. AC motors run without the ADS
 
 ## 5. Data model
 
-`NVS_SCHEMA = 2`. Size/schema mismatch still starts empty (existing v1 behaviour). Flashing this build clears a v1 motor blob.
+`NVS_SCHEMA = 2` at the time of this delta. Size/schema mismatch still starts empty (existing v1 behaviour). A later stall-recovery field bumped the live schema to 3.
 
 `MotorRecord` adds:
 

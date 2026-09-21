@@ -162,6 +162,7 @@ static void sanitizeLoadedBlob() {
     bool ok = (m->used != 0);
     if (ok) {
       m->used = 1;
+      m->stall_recovery = m->stall_recovery ? 1 : 0;
       m->name[NAME_LEN - 1] = 0;
       char err[48];
       if (!validateStructural(m, err, sizeof(err))) {
@@ -378,6 +379,7 @@ int motorStoreAdd(const MotorRecord *in, char *err, size_t err_len) {
   }
   memcpy(rec.channels, ch, sizeof(ch));
   rec.used = 1;
+  rec.stall_recovery = rec.stall_recovery ? 1 : 0;
   if (rec.is_ac) {
     rec.uv_volts = 0;
     rec.ov_volts = 0;
@@ -412,6 +414,7 @@ bool motorStoreEdit(int idx, const MotorRecord *in, char *err, size_t err_len) {
   }
   MotorRecord old = s_blob.motors[idx];
   rec.used = 1;
+  rec.stall_recovery = rec.stall_recovery ? 1 : 0;
   rec.phase_count = s_blob.motors[idx].phase_count;
   memcpy(rec.channels, s_blob.motors[idx].channels, sizeof(rec.channels));
   if (rec.is_ac) {

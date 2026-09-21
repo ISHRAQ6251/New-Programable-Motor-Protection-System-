@@ -31,11 +31,10 @@ static volatile ToneId s_tone = TONE_NONE;
 static volatile uint8_t s_calibrated = 0;
 static volatile uint8_t s_sd_ok = 0;
 
-// Non-destructive copy of the most recent trips, for the local panel. The
-// s_log_q queue above is single-consumer (loop() drains it to SD); the panel
-// must never steal from it. Writes happen in pushLog(), which its callers run
-// with s_mu held.
-static const int LOG_RING = 16;
+// Non-destructive copy of the most recent trips, for the local panel and the
+// web log page when SD is missing. s_log_q is single-consumer (loop() drains
+// it to SD); readers must never steal from it. Writes happen in pushLog(),
+// which its callers run with s_mu held. LOG_RING is 32 (config_limits.h).
 static LogEvent s_log_ring[LOG_RING];
 static int s_log_head = 0;
 static int s_log_count = 0;
@@ -113,6 +112,9 @@ static void zeroEnergy(int mi) {
   s_rt[mi].power = 0;
   s_rt[mi].energy = 0;
   s_rt[mi].low_current_ms = 0;
+  s_rt[mi].jam_count = 0;
+  s_rt[mi].jam_phase = JAM_IDLE;
+  s_rt[mi].jam_deadline_ms = 0;
 }
 
 static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
@@ -219,6 +221,9 @@ static void handleCmd(const Command &cmd) {
     s_rt[mi].run_start_ms = millis();
     s_rt[mi].last_fault = FT_NONE;
     s_rt[mi].restart_count = 0;
+    s_rt[mi].jam_count = 0;
+    s_rt[mi].jam_phase = JAM_IDLE;
+    s_rt[mi].jam_deadline_ms = 0;
     motorRelaysOn(mi);
     setTone(TONE_STARTED);
   } else if (cmd.type == CMD_STOP) {
@@ -266,13 +271,25 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
     }
     return;
   }
+  MotorRuntime *rt = &s_rt[mi];
   if (s.rms >= m->stall_amps) {
-    *trip_ft = FT_STALL;
-    *trip_i = s.rms;
-    if (vs) {
-      *trip_v = vs->v_bus;
+    if (rt->jam_phase == JAM_IDLE) {
+      const bool can_jam = m->stall_recovery &&
+                           rt->jam_count < JAM_RELEASE_MAX &&
+                           (uint32_t)(now - rt->run_start_ms) >= JAM_RELEASE_MIN_RUN_MS;
+      if (can_jam) {
+        motorRelaysOff(mi);
+        rt->jam_phase = JAM_OFF;
+        rt->jam_deadline_ms = now + JAM_RELEASE_OFF_MS;
+      } else {
+        *trip_ft = FT_STALL;
+        *trip_i = s.rms;
+        if (vs) {
+          *trip_v = vs->v_bus;
+        }
+        return;
+      }
     }
-    return;
   }
   if (vs && !m->is_ac) {
     if (!vs->present || vs->fault) {
@@ -281,19 +298,21 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
       *trip_v = vs->v_bus;
       return;
     }
-    const uint32_t age = now - s_rt[mi].run_start_ms;
-    if (age >= UV_GRACE_MS) {
-      if (m->ov_volts > 0.0f && vs->v_bus > m->ov_volts) {
-        *trip_ft = FT_OVERVOLT;
-        *trip_i = s.rms;
-        *trip_v = vs->v_bus;
-        return;
-      }
-      if (m->uv_volts > 0.0f && vs->v_bus < m->uv_volts) {
-        *trip_ft = FT_UNDERVOLT;
-        *trip_i = s.rms;
-        *trip_v = vs->v_bus;
-        return;
+    if (rt->jam_phase == JAM_IDLE) {
+      const uint32_t age = now - rt->run_start_ms;
+      if (age >= UV_GRACE_MS) {
+        if (m->ov_volts > 0.0f && vs->v_bus > m->ov_volts) {
+          *trip_ft = FT_OVERVOLT;
+          *trip_i = s.rms;
+          *trip_v = vs->v_bus;
+          return;
+        }
+        if (m->uv_volts > 0.0f && vs->v_bus < m->uv_volts) {
+          *trip_ft = FT_UNDERVOLT;
+          *trip_i = s.rms;
+          *trip_v = vs->v_bus;
+          return;
+        }
       }
     }
   }
@@ -395,7 +414,9 @@ static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
       max_i = job->res[p].rms;
     }
   }
-  if (max_i < NO_CURRENT_FRAC * s_motors[mi].in_amps) {
+  if (s_rt[mi].jam_phase != JAM_IDLE) {
+    s_rt[mi].low_current_ms = 0;
+  } else if (max_i < NO_CURRENT_FRAC * s_motors[mi].in_amps) {
     if (s_rt[mi].low_current_ms == 0) {
       s_rt[mi].low_current_ms = now;
     }
@@ -414,6 +435,58 @@ static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
   if (trip_ft != FT_NONE) {
     trip(mi, trip_ft, trip_i, trip_v);
   }
+}
+
+static void processJamRelease(int mi, uint32_t now) {
+  MotorRecord *m = &s_motors[mi];
+  MotorRuntime *rt = &s_rt[mi];
+  if (rt->status != MST_RUNNING || rt->jam_phase == JAM_IDLE) {
+    return;
+  }
+  if ((int32_t)(now - rt->jam_deadline_ms) < 0) {
+    return;
+  }
+  if (rt->jam_phase == JAM_OFF) {
+    motorRelaysOn(mi);
+    rt->jam_phase = JAM_WAIT;
+    rt->jam_deadline_ms = now + JAM_RELEASE_WAIT_MS;
+    if (rt->jam_count < JAM_RELEASE_MAX) {
+      rt->jam_count++;
+    }
+    return;
+  }
+  if (rt->jam_phase != JAM_WAIT) {
+    return;
+  }
+  bool still = false;
+  float trip_i = 0;
+  float trip_v = 0;
+  for (int p = 0; p < m->phase_count; p++) {
+    const uint8_t c = m->channels[p];
+    if (c >= MAX_CHANNELS) {
+      continue;
+    }
+    if (s_ch[c].last_rms >= m->stall_amps) {
+      still = true;
+      if (s_ch[c].last_rms > trip_i) {
+        trip_i = s_ch[c].last_rms;
+        trip_v = s_ch[c].last_v;
+      }
+    }
+  }
+  if (!still) {
+    rt->jam_count = 0;
+    rt->jam_phase = JAM_IDLE;
+    rt->jam_deadline_ms = 0;
+    return;
+  }
+  if (rt->jam_count < JAM_RELEASE_MAX) {
+    motorRelaysOff(mi);
+    rt->jam_phase = JAM_OFF;
+    rt->jam_deadline_ms = now + JAM_RELEASE_OFF_MS;
+    return;
+  }
+  trip(mi, FT_STALL, trip_i, trip_v);
 }
 
 static void processMotorCooling(int mi, uint32_t now) {
@@ -561,6 +634,9 @@ void protectionTask(void *arg) {
       if (s_rt[i].status == MST_COOLING) {
         processMotorCooling(i, now);
         continue;
+      }
+      if (s_rt[i].status == MST_RUNNING) {
+        processJamRelease(i, now);
       }
       if (s_rt[i].status != MST_RUNNING) {
         s_rt[i].thermal_pct = 0;

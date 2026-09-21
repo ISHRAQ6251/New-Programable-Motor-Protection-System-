@@ -108,7 +108,7 @@ selection, and a segmented thermal bar.
    Fault Log / Diagnostics / Firmware Info / Network Info.
 3. **Per-motor** — status icon (+ fault-type text when Fault), live current,
    segmented thermal bar, live DC voltage / power (or rated V / VA).
-4. **Fault Log** — most recent first, from the non-destructive 16-entry ring.
+4. **Fault Log** — most recent first, from the non-destructive 32-entry ring.
 5. **Diagnostics** — 0x48/0x49 found/missing with the I²C error label, per-channel
    `v_calibrated`, SD mounted, free heap.
 6. **Firmware Info** — `__DATE__` / `__TIME__` and uptime.
@@ -151,7 +151,7 @@ advisory but the queue path is still authoritative.
 
 `protectionPopLog()` is a destructive single-consumer queue drained by `loop()`
 into the SD CSV. The panel must not steal from it. `pushLog()` now also appends
-to a 16-entry RAM ring under `s_mu`, exposed through:
+to a 32-entry RAM ring under `s_mu`, exposed through:
 
 ```c
 int protectionCopyLog(LogEvent *out, int max);

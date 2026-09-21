@@ -65,7 +65,7 @@ float   power;       // W if power_is_w, else VA
 uint8_t power_is_w;
 ```
 
-`MotorRecord` and `MotorBlob` are unchanged, so `NVS_SCHEMA` stays 2.
+`MotorRecord` and `MotorBlob` were unchanged by this power delta, so `NVS_SCHEMA` stayed 2 at the time. A later stall-recovery field bumped the live schema to 3.
 
 ## 6. Behavior
 

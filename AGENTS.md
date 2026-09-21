@@ -8,13 +8,13 @@ University firmware project: replace a bimetallic thermal overload relay with an
 
 - Up to 8 channels = 8 ACS712-30A sensors + 8 relays + 8 DC voltage taps (2× ADS1115)
 - 1-phase motor = 1 channel; 3-phase motor = 3 linked channels, one dashboard row
-- Classic I²t energy model, independent stall trip, sensor-fault trip, `NO_CURRENT`
+- Classic I²t energy model, independent stall trip, optional stall recovery (jam release), sensor-fault trip, `NO_CURRENT`
 - Live DC voltage (ADS1115) with optional UV/OV trip; AC rated voltage is a manual NVS field only
 - Power: DC true `W`; AC apparent `VA` at rated V; energy RAM-only
 - Desktop web dashboard on a fixed SoftAP (`MPS-505` / `mps50005`)
 - Local panel: SH1106 128x64 OLED on the shared ADS1115 I2C bus (`Wire` GPIO 14/42) + KY-040 encoder (rotate / short / long press) + onboard WS2812 status LED (GPIO 48), with buzzer feedback
 - Themed `/login` page + HttpOnly session cookie (`mps` / `mps500` default)
-- Motor config in NVS; SD card used only for fault logs
+- Motor config in NVS; SD card used for persistent fault logs; 32-entry RAM ring feeds the web log page when SD is missing
 - Arduino IDE sketch, three FreeRTOS tasks (Wi-Fi/UI core 0, protection/loop core 1)
 
 Hardware is treated as already wired. This repo is firmware only.
@@ -49,11 +49,11 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 
 NVS namespace `mps`, blob of `MotorRecord[8]`. Never stored on SD.
 
-Motor record: name, phase count (1 or 3), assigned channel indices, AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, cooling time, auto-restart, per-channel relay polarity (default active-HIGH), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled).
+Motor record: name, phase count (1 or 3), assigned channel indices, AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, cooling time, auto-restart, stall recovery (jam release, default off), per-channel relay polarity (default active-HIGH), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled).
 
 Runtime (RAM): per-channel zero ADC, last RMS, I²t energy, voltage zero and last V; per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
 
-NVS schema **2** (v1 blob is discarded on first boot of this build).
+NVS schema **3** (older blobs are discarded on first boot of this build).
 
 Statuses: Stopped, Running, Fault, Cooling.
 
@@ -71,7 +71,7 @@ Running and `I_rms >= k_min × In`:
 
 Running and below pickup: `E` decays toward 0 over `cooling_s`.
 
-Stall: `I_rms >= stall_amps` on the next window → trip `STALL` immediately.
+Stall: `I_rms >= stall_amps` on the next window → trip `STALL` immediately, unless stall recovery is enabled. Then, after `JAM_RELEASE_MIN_RUN_MS` of Running: de-energize 300 ms, re-energize, wait 500 ms, re-check. Up to 3 pulses (`JAM_RELEASE_MAX`). Success (current `< stall_amps`) resumes Running and zeros `jam_count` (does **not** clear the auto-restart counter). Exhaustion trips `STALL` and enters Cooling as usual. Jam attempts are separate from auto-restart. While `jam_phase != JAM_IDLE`, skip stall / UV / OV / `NO_CURRENT`; keep I²t accumulation and `SENSOR_FAULT`. No extra grace after jam ends — `JAM_WAIT` is the settle window.
 
 Sensor fault (stuck ADC AC or DC, Vadc out of `[0.05, 3.05]` V, |I| > 40 A, missing ADS1115 on a running DC channel, |Vadc| > 4 V, or |Vbus| > 55 V) → trip `SENSOR_FAULT` immediately. Auto-restart still applies.
 
@@ -89,16 +89,16 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds
 
 | Module | File | Status |
 |---|---|---|
-| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 2, UV/OV + rated AC, VoltageSample |
+| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 3, UV/OV + rated AC, jam-release fields, VoltageSample |
 | Relays fail-safe | `relays.cpp` | done — OFF in `setup()` before Wi-Fi; polarity printed at de-energize |
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
 | Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean; stuck-ADC Serial |
 | DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 20 ms conversion timeout, `s_i2c_mu` |
-| I²t / stall / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; Calibrate calls `voltageReprobe()` off-mutex |
+| I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; optional jam release (3× 300/500 ms); 32-entry RAM trip ring; Calibrate calls `voltageReprobe()` off-mutex |
 | NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes; stall must exceed In/steps; cooling ≤ 86400 s; AP-password auth_pass restored to `mps500` |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
-| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()` |
+| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`) |
 | Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire; KY-040 on 47/46/19; WS2812 on GPIO 48; 3-frame status icons; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
 | Sketch entry | `MotorProtection.ino` | done |
 
@@ -115,7 +115,7 @@ User-facing guide: `docs/USER_MANUAL.md`.
 ```
 MotorProtection/voltage.cpp   i2cInitOnce, voltageReprobe, sample, s_i2c_mu
 MotorProtection/voltage.h     VoltageSample, voltageReprobe, i2cLock/i2cUnlock
-MotorProtection/protection.cpp I²t/stall/UV/OV/power; protectionCanStart, trip ring buffer
+MotorProtection/protection.cpp I²t/stall/jam release/UV/OV/power; protectionCanStart, 32-entry trip ring
 MotorProtection/ui.cpp        uiTask: OLED + encoder + WS2812 LED, boot splash + six screens
 MotorProtection/ui.h          UiBootStage, uiBegin/uiTask/uiBootStage/uiBootNote
 MotorProtection/ui_icons.h    8x8 XBM status (3-frame RUNNING/FAULT/COOLING) + AP icons
@@ -158,17 +158,18 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Motor API add endpoint is `/api/motor/add` (never `/api/motor`, which prefixes `/edit` and `/del`)
 - Task WDT 5 s on the protection task; NO_CURRENT after 2 s below 0.05×In; auto-restart cap 3, reset after 10 min clean run; `dt` cap 5 s
 - Fault CSV path `/faults.csv` with `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA`; old 4/5-column rows still parse
-- Power/energy are RAM only in `MotorRuntime`; no NVS write, no schema bump (stays 2). Energy resets on Start and reboot
+- Power/energy are RAM only in `MotorRuntime`; no NVS write. Energy resets on Start and reboot
+- Jam release: `JAM_RELEASE_MAX = 3`, `JAM_RELEASE_OFF_MS = 300`, `JAM_RELEASE_WAIT_MS = 500`, `JAM_RELEASE_MIN_RUN_MS = 500`; no user-configurable timing; default `stall_recovery = 0`
 - AC power is apparent `VA` at rated V; power factor is not measurable and must never be shown as `W`
 - I²C SDA/SCL = GPIO 14 / 42; ADS1115 data rate 250 SPS; UV/OV grace 250 ms after DC Start
-- NVS schema 2; flashing this build drops a v1 motor blob (size/schema mismatch → empty list)
+- NVS schema 3; flashing this build drops a v1/v2 motor blob (size/schema mismatch → empty list)
 - Buzzer frequencies as named functions in the design spec (1 kHz fault, short chirps)
 - Live status poll interval ≈ 1 s
 - Security page exists to change dashboard login credentials (invalidates session)
 - Core assignment: Wi-Fi + UI on core 0, protection + loop on core 1
 - `MPS_TEST_HOOKS` compile flag is optional and not required for v1
 - Local panel: SH1106 (**not** SSD1306) on the shared ADS1115 bus `Wire` GPIO 14/42 via U8g2 `HW_I2C`; KY-040 on GPIO 47/46/19 with a state-table quadrature decoder (one step per detent) and 40 ms switch debounce, 600 ms long-press threshold; onboard WS2812 on GPIO 48 via Adafruit NeoPixel (one-wire, never `s_i2c_mu`)
-- `protectionCanStart()` is the single Start gate shared by the web API and the panel; `protectionCopyLog()` exposes a non-destructive 16-entry RAM trip ring (the SD `protectionPopLog()` queue keeps its single consumer in `loop()`)
+- `protectionCanStart()` is the single Start gate shared by the web API and the panel; `protectionCopyLog()` exposes a non-destructive 32-entry RAM trip ring (the SD `protectionPopLog()` queue keeps its single consumer in `loop()`); web log uses that ring when SD is missing (`ram_only`)
 - `buzzer.cpp` guards its sequencer with a mutex because `uiTask` (core 0) and `loop()` (core 1) both issue tones; panel Start/Stop success tone comes from protection, not the panel, so it is not doubled
 - Panel boot stages are published from `setup()` via `uiBootStage()` / `uiBootNote()`; the splash reveals them, then auto-advances to Home
 
@@ -193,7 +194,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - **Never call `Wire.end()`.** It tears down the driver; a later `begin()` does not fully recover the bus. `i2cInitOnce()` runs once; Calibrate uses `voltageReprobe()`. After `ads.begin()`, re-bind `Wire.begin(14, 42)` because Adafruit BusIO may call `Wire.begin()` with no pins.
 - **SDA/SCL swap:** a swapped pair scans as `(none)` or timeouts (`err=5`). Firmware cannot auto-detect a swap. Confirm GPIO 14 = SDA and 42 = SCL on the ADS modules (not ESP32 default 8/9).
 - ADS1115 `s_ok[]` is no longer boot-only. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a power cycle. CH0–3 stay 0x48 and CH4–7 stay 0x49; a swapped ADDR pin shows as the wrong chip missing, not as swapped readings.
-- Missing SD is a warning, not a boot failure.
+- Missing SD is a warning, not a boot failure. Web log then serves the 32-entry RAM ring with `ram_only:true` (lost on reboot); OLED Fault Log uses the same ring.
 - Motor API routes must never be prefixes of one another. `/api/motor` collided with `/api/motor/edit` and `/api/motor/del`. Add is `/api/motor/add`; register `/edit` and `/del` first.
 - If Serial ever printed `dash pass: mps50005`, that was AP password leaking into NVS `auth_pass`. Load now restores `mps500` when `auth_pass` equals `AP_PASS`.
 - The panel shares `Wire` with the ADS1115s (`Wire.begin(14, 42)`), re-bound after `u8g2.begin()` (same BusIO-style precaution). Every raw Wire transaction is held under `s_i2c_mu` only for that call. Never call `Wire.end()`.
@@ -219,5 +220,6 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - 2026-09-20 — Local OLED + encoder panel: `ui.cpp`/`ui.h`/`ui_icons.h` `uiTask` on core 0, SH1106 on `Wire1` (GPIO 25/47), KY-040 on 22/23/24, boot splash + Home/Per-motor/Fault Log/Diagnostics/Firmware/Network screens, `toneBack()`, shared `protectionCanStart()` gate, non-destructive `protectionCopyLog()` ring, cross-core buzzer mutex, U8g2 dependency.
 - 2026-09-21 — Pin/bus correction: GPIO 22–25 do not exist on ESP32-S3. Encoder CLK/DT/SW moved to 47/48/46 (GPIO 46 is ENC_SW only). OLED shares the ADS1115 I²C bus (GPIO 14/42) via `U8G2_SH1106_128X64_NONAME_F_HW_I2C`; `s_i2c_mu` serializes every Wire transaction. Dropped `OLED_SDA_PIN`/`OLED_SCL_PIN`/`Wire1`.
 - 2026-09-21 — Encoder off GPIO 48 (onboard WS2812): CLK 47 / DT 46 / SW 19. NeoPixel status LED on GPIO 48 (worst-state Fault > Running > Cooling > Stopped; thermal gradient while Running; ~2 Hz fault/cooling flash). 3-frame RUNNING/FAULT/COOLING icons (~450 ms). Centered splash. Adafruit NeoPixel library.
+- 2026-09-21 — Optional per-motor stall recovery (jam release): 3× 300/500 ms pulses after 500 ms of Running; I²t and SENSOR stay live; stall / UV / OV / NO_CURRENT skipped while `jam_phase != IDLE`. 32-entry RAM fault ring feeds the web log when SD is missing (`ram_only`). NVS schema 3.
 
 Last firmware: I²C `i2cInitOnce` / `voltageReprobe` / no `Wire.end()` (origin `455debf` and follow-up quality), on top of Calibrate re-probe (`2f53bc7`), divider 150 kΩ / 10 kΩ (`b5e3754`), and safety review (`912a982`).

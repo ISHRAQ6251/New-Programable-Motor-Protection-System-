@@ -449,8 +449,8 @@ static void renderMotor(const StatusSnapshot &snap) {
 }
 
 static void renderFaultLog() {
-  LogEvent ev[16];
-  const int n = protectionCopyLog(ev, 16);
+  LogEvent ev[LOG_RING];
+  const int n = protectionCopyLog(ev, LOG_RING);
   drawHeader("Fault Log", 0);
   if (n == 0) {
     s_oled.setFont(F_BODY);

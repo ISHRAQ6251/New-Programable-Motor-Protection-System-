@@ -32,8 +32,15 @@ static const float COOLING_MAX_S    = 86400.0f;
 static const uint32_t WDT_TIMEOUT_MS = 5000u;
 static const float DT_MAX_S         = 5.0f;
 
+static const uint8_t JAM_RELEASE_MAX        = 3;
+static const uint32_t JAM_RELEASE_OFF_MS    = 300;
+static const uint32_t JAM_RELEASE_WAIT_MS   = 500;
+static const uint32_t JAM_RELEASE_MIN_RUN_MS = 500;
+
+static const int LOG_RING = 32;
+
 static const uint32_t NVS_MAGIC   = 0x4D505331u;
-static const uint16_t NVS_SCHEMA  = 2;
+static const uint16_t NVS_SCHEMA  = 3;
 
 static const char *NVS_NS        = "mps";
 static const char *NVS_KEY_BLOB  = "motors";

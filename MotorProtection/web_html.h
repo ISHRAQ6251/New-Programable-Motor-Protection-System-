@@ -43,6 +43,8 @@ tr:hover td{background:rgba(30,41,59,.55)}
 .s-Fault{background:#450a0a;color:#f87171}
 .s-Cooling{background:#451a03;color:#fbbf24}
 .fault-tag{display:block;font-size:11px;color:var(--bad);margin-top:2px}
+.jam-tag{display:block;font-size:11px;color:var(--warn);margin-top:2px}
+.banner.ram{background:#FCD34D;border:1px solid #B45309;color:#1c1917;font-size:12px}
 button,.btn{cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--fg);
   padding:8px 14px;border-radius:6px;font:500 13px/1.2 inherit;min-height:36px}
 button:hover,.btn:hover{border-color:#64748b}
@@ -56,6 +58,7 @@ label{color:var(--dim);align-self:center}
 input,select{background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font:14px inherit;min-height:36px;width:100%}
 input:focus,select:focus,button:focus{outline:2px solid var(--ok);outline-offset:1px}
 input:disabled,select:disabled{opacity:.45}
+input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
 .steps{grid-column:1/-1;display:grid;gap:8px}
 .step{display:grid;grid-template-columns:80px 1fr 1fr;gap:8px;align-items:center}
 .form-actions{grid-column:1/-1;display:flex;gap:8px;margin-top:8px}
@@ -130,6 +133,9 @@ input:disabled,select:disabled{opacity:.45}
       <input id="a-cool" name="cool" type="number" step="0.1" min="0.1" required>
       <label for="a-auto">Auto-restart</label>
       <select id="a-auto" name="auto"><option value="0">Off</option><option value="1">On</option></select>
+      <label for="a-jam">Stall recovery (jam release)</label>
+      <input id="a-jam" type="checkbox">
+      <span class="help">Briefly pulses power to dislodge obstructions. For conveyors. Not for pumps or precision loads.</span>
       <label for="a-pol">Relay polarity</label>
       <select id="a-pol" name="pol"><option value="1">Active-HIGH (default)</option><option value="0">Active-LOW</option></select>
       <label for="a-n">Protection steps N</label>
@@ -168,6 +174,9 @@ input:disabled,select:disabled{opacity:.45}
       <input id="e-cool" type="number" step="0.1" min="0.1" required>
       <label for="e-auto">Auto-restart</label>
       <select id="e-auto"><option value="0">Off</option><option value="1">On</option></select>
+      <label for="e-jam">Stall recovery (jam release)</label>
+      <input id="e-jam" type="checkbox">
+      <span class="help">Briefly pulses power to dislodge obstructions. For conveyors. Not for pumps or precision loads.</span>
       <label for="e-pol">Relay polarity</label>
       <select id="e-pol"><option value="1">Active-HIGH</option><option value="0">Active-LOW</option></select>
       <label for="e-n">Protection steps N</label>
@@ -182,12 +191,13 @@ input:disabled,select:disabled{opacity:.45}
   <section class="page" id="p-log">
     <h1>Fault log</h1>
     <div id="log-unavail" class="banner" hidden>Fault log unavailable — no SD card. Protection and dashboard still run.</div>
+    <div id="log-ram" class="banner ram" hidden>RAM buffer only — logs lost on reboot</div>
     <div id="log-wrap">
       <table>
         <thead><tr><th>Uptime (ms)</th><th>Motor</th><th>Type</th><th>Current (A)</th><th>Voltage (V)</th><th>Power (W)</th><th>Power (VA)</th></tr></thead>
         <tbody id="log-body"></tbody>
       </table>
-      <p class="form-actions" style="margin-top:16px">
+      <p class="form-actions" id="log-actions" style="margin-top:16px">
         <a class="btn" href="/api/log/export">Export CSV</a>
         <button class="btn-bad" id="log-clear">Clear log</button>
       </p>
@@ -272,10 +282,11 @@ function renderDash(){
     const canStop=m.status===1;
     const canReset=m.status===2||m.status===3;
     const fault=m.last_fault&&(m.status===2||m.status===3)?'<span class="fault-tag">'+esc(m.last_fault)+"</span>":"";
+    const jam=m.jam_active?'<span class="jam-tag">JAM ('+(m.jam_count||0)+"/3)</span>":"";
     const tr=document.createElement("tr");
     tr.innerHTML="<td class='mono'>"+esc((m.channels||[]).join(", "))+"</td><td>"+esc(m.name)+
       "<div class='dash-field'>"+(m.ac?("AC "+Number(m.vac||0).toFixed(0)+" V "+(m.hz||"")+" Hz"):"DC")+"</div></td>"+
-      "<td><span class='badge s-"+st+"'>"+st+"</span>"+fault+"</td>"+
+      "<td><span class='badge s-"+st+"'>"+st+"</span>"+fault+jam+"</td>"+
       "<td>"+fmtU(m.uptime_ms)+"</td><td>"+m.fault_count+"</td>"+
       "<td class='mono'>"+rmsCell(m)+"</td><td class='mono'>"+voltCell(m)+"</td><td>"+powerCell(m)+"</td><td>"+thBar(m.thermal_pct)+"</td>"+
       "<td class='row-actions'>"+
@@ -350,7 +361,8 @@ $("f-add").onsubmit=ev=>{
     "&vac="+(ac==="1"?$("a-vac").value:"0")+
     "&uv="+(ac==="0"?$("a-uv").value:"0")+
     "&ov="+(ac==="0"?$("a-ov").value:"0")+
-    "&stall="+$("a-stall").value+"&cool="+$("a-cool").value+"&auto="+$("a-auto").value+
+     "&stall="+$("a-stall").value+"&cool="+$("a-cool").value+"&auto="+$("a-auto").value+
+     "&jam="+($("a-jam").checked?1:0)+
     "&pol="+$("a-pol").value+"&n="+n;
   for(let i=0;i<n;i++){
     body+="&k"+i+"="+document.querySelector("[name=ak"+i+"]").value;
@@ -376,7 +388,7 @@ function fillEditForm(){
   $("e-ch").textContent="CH "+(m.channels||[]).join(", ")+"  ("+m.phases+"-phase)";
   $("e-name").value=m.name;$("e-in").value=m.in;$("e-ac").value=m.ac?1:0;
   $("e-hz").value=m.hz||50;$("e-stall").value=m.stall;$("e-cool").value=m.cool;
-  $("e-auto").value=m.auto?1:0;$("e-pol").value=m.pol?1:0;$("e-n").value=m.steps.length||1;
+  $("e-auto").value=m.auto?1:0;$("e-jam").checked=!!m.jam;$("e-pol").value=m.pol?1:0;$("e-n").value=m.steps.length||1;
   $("e-vac").value=m.vac||"";
   $("e-uv").value=m.uv||0;
   $("e-ov").value=m.ov||0;
@@ -392,7 +404,8 @@ $("f-edit").onsubmit=ev=>{
     "&vac="+(ac==="1"?$("e-vac").value:"0")+
     "&uv="+(ac==="0"?$("e-uv").value:"0")+
     "&ov="+(ac==="0"?$("e-ov").value:"0")+
-    "&stall="+$("e-stall").value+"&cool="+$("e-cool").value+"&auto="+$("e-auto").value+
+     "&stall="+$("e-stall").value+"&cool="+$("e-cool").value+"&auto="+$("e-auto").value+
+     "&jam="+($("e-jam").checked?1:0)+
     "&pol="+$("e-pol").value+"&n="+n;
   for(let k=0;k<n;k++){
     body+="&k"+k+"="+document.querySelector("[name=ek"+k+"]").value;
@@ -411,15 +424,18 @@ $("e-del").onclick=()=>{
 };
 function loadLog(){
   fetch("/api/log",{credentials:"same-origin"}).then(guard).then(r=>r.json()).then(j=>{
-    $("log-unavail").hidden=!!j.sd_ok;
-    $("log-wrap").hidden=!j.sd_ok;
+    const ram=!!j.ram_only;
+    $("log-unavail").hidden=!!j.sd_ok || ram;
+    $("log-ram").hidden=!ram;
+    $("log-wrap").hidden=!(j.sd_ok || ram);
+    $("log-actions").hidden=ram;
     const tb=$("log-body");tb.innerHTML="";
     (j.rows||[]).forEach(row=>{
       const tr=document.createElement("tr");
       tr.innerHTML="<td>"+esc(row.uptime_ms)+"</td><td>"+esc(row.motor)+"</td><td>"+esc(row.type)+"</td><td>"+esc(row.current_A)+"</td><td>"+esc(row.voltage_V||"")+"</td><td>"+esc(row.power_W||"")+"</td><td>"+esc(row.power_VA||"")+"</td>";
       tb.appendChild(tr);
     });
-    if(!(j.rows||[]).length && j.sd_ok){
+    if(!(j.rows||[]).length && (j.sd_ok || ram)){
       tb.innerHTML="<tr><td colspan='7' class='empty'>No fault entries.</td></tr>";
     }
   });

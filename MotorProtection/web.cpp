@@ -199,6 +199,10 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m) {
   m->stall_amps = paramF(req, "stall", "0");
   m->cooling_s = paramF(req, "cool", "0");
   m->auto_restart = (uint8_t)paramI(req, "auto", "0");
+  m->stall_recovery = (uint8_t)paramI(req, "jam", "0");
+  if (m->stall_recovery) {
+    m->stall_recovery = 1;
+  }
   m->rated_ac_v = paramF(req, "vac", "0");
   m->uv_volts = paramF(req, "uv", "0");
   m->ov_volts = paramF(req, "ov", "0");
@@ -325,19 +329,23 @@ static void handleStatus(AsyncWebServerRequest *req) {
                  "{\"idx\":%d,\"used\":1,\"name\":\"%s\",\"status\":%u,\"status_s\":\"%s\","
                  "\"uptime_ms\":%u,\"fault_count\":%u,\"last_fault\":\"%s\",\"channels\":[%s],"
                  "\"phases\":%u,\"rms\":[%s],\"volts\":[%s],\"thermal_pct\":%.1f,"
-                 "\"power\":%s,\"power_unit\":\"%s\",\"energy\":%.2f,"
-                 "\"in\":%.4f,\"stall\":%.4f,\"cool\":%.3f,\"ac\":%u,\"hz\":%u,"
-                 "\"vac\":%.3f,\"uv\":%.3f,\"ov\":%.3f,\"auto\":%u,\"pol\":%u,\"vcal\":%u,\"steps\":%s}",
-                 i, m->name, (unsigned)snap.rt[i].status, stName(snap.rt[i].status),
-                 (unsigned)snap.rt[i].run_start_ms, (unsigned)snap.rt[i].fault_count,
-                 ftName(snap.rt[i].last_fault), chbuf, (unsigned)m->phase_count,
-                 rmsbuf, vbuf, (double)snap.thermal_pct[i],
-                 pwr, m->is_ac ? "VA" : "W", (double)snap.rt[i].energy,
-                 (double)m->in_amps, (double)m->stall_amps, (double)m->cooling_s,
-                 (unsigned)m->is_ac, (unsigned)m->mains_hz,
-                 (double)m->rated_ac_v, (double)m->uv_volts, (double)m->ov_volts,
-                 (unsigned)m->auto_restart, (unsigned)m->relay_active_high[0],
-                 (unsigned)vcal, stepbuf);
+                  "\"power\":%s,\"power_unit\":\"%s\",\"energy\":%.2f,"
+                  "\"in\":%.4f,\"stall\":%.4f,\"cool\":%.3f,\"ac\":%u,\"hz\":%u,"
+                  "\"vac\":%.3f,\"uv\":%.3f,\"ov\":%.3f,\"auto\":%u,\"pol\":%u,\"vcal\":%u,"
+                  "\"jam\":%u,\"jam_active\":%u,\"jam_count\":%u,\"steps\":%s}",
+                  i, m->name, (unsigned)snap.rt[i].status, stName(snap.rt[i].status),
+                  (unsigned)snap.rt[i].run_start_ms, (unsigned)snap.rt[i].fault_count,
+                  ftName(snap.rt[i].last_fault), chbuf, (unsigned)m->phase_count,
+                  rmsbuf, vbuf, (double)snap.thermal_pct[i],
+                  pwr, m->is_ac ? "VA" : "W", (double)snap.rt[i].energy,
+                  (double)m->in_amps, (double)m->stall_amps, (double)m->cooling_s,
+                  (unsigned)m->is_ac, (unsigned)m->mains_hz,
+                  (double)m->rated_ac_v, (double)m->uv_volts, (double)m->ov_volts,
+                  (unsigned)m->auto_restart, (unsigned)m->relay_active_high[0],
+                  (unsigned)vcal,
+                  (unsigned)m->stall_recovery,
+                  (unsigned)(snap.rt[i].jam_phase != JAM_IDLE ? 1 : 0),
+                  (unsigned)snap.rt[i].jam_count, stepbuf);
     if (n < 0 || w + n >= end) {
       jsonUnlock();
       sendErr(req, "json overflow");
@@ -470,12 +478,74 @@ static void handleDel(AsyncWebServerRequest *req) {
   sendOk(req);
 }
 
+static const char *logFtName(FaultType t) {
+  return ftName(t)[0] ? ftName(t) : "UNKNOWN";
+}
+
+static int appendRamLogRow(char *w, char *end, const LogEvent *ev) {
+  char pwr_w[16];
+  char pwr_va[16];
+  pwr_w[0] = 0;
+  pwr_va[0] = 0;
+  if (ev->power_is_w) {
+    snprintf(pwr_w, sizeof(pwr_w), "%.1f", (double)ev->power);
+  } else {
+    snprintf(pwr_va, sizeof(pwr_va), "%.0f", (double)ev->power);
+  }
+  char cur[16];
+  char volt[16];
+  snprintf(cur, sizeof(cur), "%.3f", (double)ev->current_a);
+  snprintf(volt, sizeof(volt), "%.3f", (double)ev->voltage_v);
+  return snprintf(w, end - w,
+                  "{\"uptime_ms\":\"%lu\",\"motor\":\"%s\",\"type\":\"%s\",\"current_A\":\"%s\","
+                  "\"voltage_V\":\"%s\",\"power_W\":\"%s\",\"power_VA\":\"%s\"}",
+                  (unsigned long)ev->uptime_ms, ev->motor, logFtName(ev->type),
+                  cur, volt, pwr_w, pwr_va);
+}
+
 static void handleLog(AsyncWebServerRequest *req) {
   if (!auth(req)) {
     return;
   }
   if (!sdLogOk()) {
-    sendJson(req, 200, "{\"ok\":1,\"sd_ok\":0,\"rows\":[]}");
+    LogEvent ev[LOG_RING];
+    const int n = protectionCopyLog(ev, LOG_RING);
+    jsonLock();
+    char *w = s_json;
+    char *end = s_json + sizeof(s_json);
+    int k = snprintf(w, end - w, "{\"ok\":1,\"sd_ok\":0,\"ram_only\":true,\"rows\":[");
+    if (k < 0 || w + k >= end) {
+      jsonUnlock();
+      sendErr(req, "json overflow");
+      return;
+    }
+    w += k;
+    for (int i = 0; i < n; i++) {
+      if (i) {
+        if (w + 2 >= end) {
+          jsonUnlock();
+          sendErr(req, "json overflow");
+          return;
+        }
+        *w++ = ',';
+      }
+      k = appendRamLogRow(w, end, &ev[i]);
+      if (k < 0 || w + k >= end) {
+        jsonUnlock();
+        sendErr(req, "json overflow");
+        return;
+      }
+      w += k;
+    }
+    if (w + 3 >= end) {
+      jsonUnlock();
+      sendErr(req, "json overflow");
+      return;
+    }
+    *w++ = ']';
+    *w++ = '}';
+    *w = 0;
+    sendJsonLocked(req, 200);
     return;
   }
   char csv[4096];

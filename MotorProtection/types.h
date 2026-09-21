@@ -20,6 +20,12 @@ enum FaultType : uint8_t {
   FT_NO_CURRENT
 };
 
+enum JamPhase : uint8_t {
+  JAM_IDLE = 0,
+  JAM_OFF  = 1,
+  JAM_WAIT = 2
+};
+
 enum CmdType : uint8_t {
   CMD_START = 0,
   CMD_STOP,
@@ -58,6 +64,7 @@ struct MotorRecord {
   float   rated_ac_v;
   float   uv_volts;
   float   ov_volts;
+  uint8_t stall_recovery;
 };
 
 struct MotorBlob {
@@ -105,6 +112,9 @@ struct MotorRuntime {
   uint8_t     power_is_w;
   uint8_t     restart_count;
   uint32_t    low_current_ms;
+  uint8_t     jam_count;
+  uint8_t     jam_phase;
+  uint32_t    jam_deadline_ms;
 };
 
 struct StatusSnapshot {

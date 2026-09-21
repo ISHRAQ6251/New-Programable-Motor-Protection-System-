@@ -1,7 +1,7 @@
 # ESP32-S3 Programmable Motor Protection Firmware — Design
 
-Date: 2026-09-02 (updated 2026-09-13 for the DC-voltage / rated-AC extension, 2026-09-14 for the power display / logging extension)
-Status: Approved. v1 + DC voltage / AC rated-V field + power display implemented in `MotorProtection/` (not compiled in this environment; committed). Focused delta specs: `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` and `docs/superpowers/specs/2026-09-14-power-display-design.md`.
+Date: 2026-09-02 (updated 2026-09-13 for the DC-voltage / rated-AC extension, 2026-09-14 for the power display / logging extension, 2026-09-21 for stall recovery / RAM fault ring)
+Status: Approved. v1 + DC voltage / AC rated-V field + power display + stall recovery (jam release) + 32-entry RAM fault ring implemented in `MotorProtection/` (not compiled in this environment; committed). Focused delta specs: `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` and `docs/superpowers/specs/2026-09-14-power-display-design.md`.
 Scope: ESP32-S3 firmware only. Sensors, relays, SD breakout, voltage taps, and buzzer are treated as already wired.
 
 ## 1. Purpose
@@ -150,7 +150,7 @@ Relays:
 
 ### 5.1 Motor record (NVS, not SD)
 
-Fixed-size struct, packed, versioned (`NVS_SCHEMA = 2`). A size/schema mismatch (e.g. an old v1 blob) starts empty.
+Fixed-size struct, packed, versioned (`NVS_SCHEMA = 3`). A size/schema mismatch (e.g. an old v1/v2 blob) starts empty.
 
 ```
 MotorRecord
@@ -165,6 +165,7 @@ MotorRecord
   float    stall_amps
   float    cooling_s
   uint8_t  auto_restart         // 0/1
+  uint8_t  stall_recovery       // 0/1 jam release; default 0
   uint8_t  relay_active_high[3] // 1 = active-HIGH (default)
   uint8_t  step_count           // 1..8
   float    step_k[8]            // multiplier of In
@@ -187,7 +188,7 @@ Corrupt, missing, or wrong-schema blob → empty motor list, Serial warning, do 
 
 Per channel: `zero_adc`, `last_rms`, `energy_a2s` (I²t accumulator), `v_zero`, `last_v`, `v_calibrated`, last sample ticks.
 
-Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type, `power` (latest `W` or `VA`), `energy` (`Wh` / `VAh`, RAM only). Power/energy update once per protection pass, show `0.0` when not Running, and are never written to NVS. See `2026-09-14-power-display-design.md`.
+Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type, `power` (latest `W` or `VA`), `energy` (`Wh` / `VAh`, RAM only), jam-release `jam_count` / `jam_phase` / `jam_deadline_ms`. Power/energy update once per protection pass, show `0.0` when not Running, and are never written to NVS. See `2026-09-14-power-display-design.md`.
 
 Dashboard thermal % for a motor is the max of its channels' `100 * E / E_trip`. For 3-phase that is the hottest phase.
 
@@ -236,7 +237,9 @@ Thermal load % (dashboard): `0` below pickup; otherwise `100 * E / E_trip` of th
 
 ### 6.3 Stall
 
-If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately. No I²t involvement.
+If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately, unless `stall_recovery` is enabled. No I²t involvement on the stall path.
+
+Optional jam release (fixed constants, not user-timed): after `JAM_RELEASE_MIN_RUN_MS` (500) of Running, de-energize `JAM_RELEASE_OFF_MS` (300), re-energize, wait `JAM_RELEASE_WAIT_MS` (500), re-check. Up to `JAM_RELEASE_MAX` (3) pulses. Success zeros `jam_count` only (not the auto-restart counter). Exhaustion trips `STALL` and Cooling as usual. While `jam_phase != JAM_IDLE`: skip stall / UV / OV / `NO_CURRENT`; keep I²t accumulation and `SENSOR_FAULT`. No extra grace after jam ends.
 
 ### 6.4 Sensor fault
 
@@ -296,9 +299,9 @@ Themed `/login` page (same dark dashboard theme). Successful POST sets an HttpOn
 Desktop-only UI (wide table layout, not mobile-first). Four operator pages plus Security, same dashboard for any client on the AP:
 
 1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), live DC voltage (em dash for AC), power (true `W` for DC, apparent `VA` for AC) with session energy, thermal load % (hottest phase), last fault tag, Start/Stop, Reset (enabled in Fault or Cooling). A meta line shows ADS1115 ok/missing. Poll `GET /api/status` about once per second. See `2026-09-14-power-display-design.md`.
-2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip). AC shows mains Hz + rated AC voltage; DC shows optional UV/OV (0 = off).
+2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip). AC shows mains Hz + rated AC voltage; DC shows optional UV/OV (0 = off). Stall-recovery checkbox (jam release; default off).
 3. Edit / delete — same fields as add.
-4. Log — table or an "unavailable" banner if `sd_ok == false`. Export CSV, clear.
+4. Log — SD CSV when mounted; otherwise the 32-entry RAM ring with `ram_only` and a “RAM buffer only — logs lost on reboot” banner. Export CSV / clear are SD-only.
 5. Security — change dashboard username/password.
 
 Implementation notes:
@@ -324,7 +327,7 @@ GPIO 21, LEDC, non-blocking. Protection queues a tone id; `loop()` advances the 
 
 SPI (not SDIO), CS GPIO 10. RoboticsBD 3.3 V breakout, no CD pin. Presence = successful `SD.begin()`.
 
-Mount failure: set `sd_ok = false`, Serial warning, never touch `File` objects, skip writes. Dashboard and protection continue.
+Mount failure: set `sd_ok = false`, Serial warning, never touch `File` objects, skip writes. Dashboard and protection continue. The 32-entry RAM ring is always written; the web Log page serves it with `ram_only:true` when SD is missing.
 
 Log file `/faults.csv`. Header: `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA`
 
@@ -361,7 +364,7 @@ If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32
 
 | Failure | Behaviour |
 |---|---|
-| SD missing/unformatted | Boot, protect, serve UI; log page = unavailable |
+| SD missing/unformatted | Boot, protect, serve UI; log page = 32-entry RAM ring (`ram_only`) |
 | NVS corrupt | Empty motor list; Serial warning |
 | Sensor fault | Trip that motor |
 | ADS1115 missing (DC) | DC Start rejected; a missing half leaves its AC channels usable |

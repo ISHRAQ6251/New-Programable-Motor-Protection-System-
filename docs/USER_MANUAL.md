@@ -10,9 +10,9 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 
 - Up to **8 protection channels**. Each channel is one ACS712-30A current sensor, one relay, and one DC voltage tap (ADS1115).
 - A **single-phase** motor uses 1 channel. A **three-phase** motor uses 3 linked channels: a fault on any phase opens all three relays, and the dashboard shows one row, not three.
-- Classic **I²t energy** trip curve, plus a faster independent **stall** trip and a **sensor-fault** trip.
+- Classic **I²t energy** trip curve, plus a faster independent **stall** trip, optional **stall recovery** (jam release), and a **sensor-fault** trip.
 - Motor settings live in on-chip flash (NVS). They survive power cycles even if the SD card is missing.
-- The SD card is used **only** for a fault-history CSV. Missing card: protection and dashboard still run; the Log page shows "unavailable".
+- The SD card is used **only** for a persistent fault-history CSV. Missing card: protection and dashboard still run; the Log page shows the last 32 trips from RAM with a “RAM buffer only — logs lost on reboot” banner.
 - Access is local Wi-Fi only: the ESP32 creates network `MPS-505`. There is no router join, no cloud, no DDNS.
 - A local **SH1106 OLED + KY-040 encoder** panel shows status and allows Start/Stop at the enclosure. The onboard WS2812 (GPIO 48) is a status LED. The dashboard stays the full configuration UI (motor add/edit, security).
 
@@ -293,7 +293,7 @@ Desktop layout only (wide tables). Pages:
 | Dashboard | One row per motor: channels, name, status, uptime, fault count, live RMS, live DC V (em dash for AC), power and session energy, thermal %, Start / Stop / Reset |
 | Add motor | Wizard: phase count first, then name and protection settings |
 | Edit | Change settings or delete (delete only from Stopped or Fault) |
-| Log | Fault CSV. Banner if no SD. Export / Clear when a card is mounted |
+| Log | Fault CSV when SD is mounted. Without SD: 32-entry RAM ring + “RAM buffer only” banner |
 | Security | Change dashboard username and password |
 
 Live values poll about once per second.
@@ -317,11 +317,12 @@ Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silen
 4. **Supply** — AC or DC.
    - AC: pick **50 Hz** or **60 Hz** (RMS window) and **Rated AC voltage** (nameplate only; not sensed, not a trip).
    - DC: optional **Undervoltage** and **Overvoltage** in volts. **0 disables** that trip. If both are set, OV must be greater than UV. Live V is the terminal downstream of the relay.
-5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window. Must exceed In and every I²t step current.
+5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window, unless stall recovery is enabled. Must exceed In and every I²t step current.
 6. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
 7. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off). On still latches Fault after 3 consecutive trips; a 10-minute trip-free run, Start, or Reset clears the counter.
-8. **Relay polarity** — Active-HIGH (default) or Active-LOW for this motor's channels.
-9. **N protection steps** (1–8). For each step enter:
+8. **Stall recovery (jam release)** — optional. Off by default. See §5.2.1.
+9. **Relay polarity** — Active-HIGH (default) or Active-LOW for this motor's channels.
+10. **N protection steps** (1–8). For each step enter:
    - **k × In** — current multiplier (e.g. 1.2 means 1.2 × operating current)
    - **trip time (s)** — how long that energy budget lasts at exactly `k × In`
 
@@ -336,6 +337,26 @@ Example curve for In = 10 A:
 
 Stall might be set to 45 A so a locked rotor trips on the next ~20 ms window, without waiting for I²t.
 
+### 5.2.1 Stall recovery (jam release)
+
+Optional per-motor checkbox on Add / Edit: **Stall recovery (jam release)**. Default **off**.
+
+When enabled and the motor has been Running for at least **500 ms**, a stall does **not** trip immediately. Instead the firmware pulses the relay(s) to try to free a jam (a stuck conveyor object, not a locked rotor that should trip):
+
+1. De-energize **300 ms**, then re-energize.
+2. Wait **500 ms** for spin-up, then re-check current.
+3. If current is below stall: resume Running and zero the jam-attempt count.
+4. If still stalled: repeat, up to **3** pulses total.
+5. If all 3 fail: trip `STALL` and enter Cooling as usual.
+
+Timing is fixed (not user-configurable). Jam attempts are a **separate counter** from auto-restart. A successful jam recovery does **not** clear the auto-restart counter. After a failed jam sequence the motor cools, then auto-restart (if enabled) does a full Start — not more jam pulses — and the 500 ms run-in applies again.
+
+While pulses are in progress, I²t energy still accumulates and `SENSOR_FAULT` still trips. Stall, UV/OV, and `NO_CURRENT` are skipped until the sequence ends (the 500 ms wait is the settle window; there is no extra grace).
+
+**Do not enable** on pumps, precision equipment, or fragile loads. The pulses are short, but they still apply power to a stalled machine.
+
+The dashboard shows `JAM (n/3)` next to status while a sequence is active. The local OLED panel does not show jam state.
+
 ### 5.3 Start, stop, reset, calibrate
 
 - **Start** — only from Stopped, and only after zero calibration (done automatically at boot). DC Start also needs the ADS1115 for that motor's channels.
@@ -343,9 +364,11 @@ Stall might be set to 45 A so a locked rotor trips on the next ~20 ms window, wi
 - **Reset** — from Fault or Cooling, same as Stop plus silence buzzer.
 - **Calibrate zeros** — re-probes I²C for the two ADS1115 chips, then re-measures current ADC zeros and DC voltage zeros on all 8 channels. Allowed only when every motor is Stopped or Fault. Relays stay off so voltage taps sit at 0 V. A wiring fix to an ADDR pin is picked up here without a reboot.
 
-### 5.4 Fault log (SD)
+### 5.4 Fault log (SD + RAM)
 
-If a card is mounted: file `/faults.csv` on the card.
+Every trip is written to a **32-entry RAM ring** (most recent first). If an SD card is mounted, the same event is also appended to `/faults.csv`.
+
+If a card is mounted: file `/faults.csv` on the card. The Log page shows the full CSV. Export downloads it. Clear rewrites the header only.
 
 ```
 uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA
@@ -355,9 +378,9 @@ uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA
 
 DC rows fill `power_W`; AC rows fill `power_VA`; the other column is blank. Power is the value from the sample window that tripped.
 
-Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`, `NO_CURRENT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Export downloads the same CSV. Clear rewrites the header only. Older 4- or 5-column rows still parse; missing columns read as blank.
+Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`, `NO_CURRENT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Older 4- or 5-column rows still parse; missing columns read as blank.
 
-No card: Log page shows a yellow banner. Motors still protect.
+No card: the Log page shows the RAM ring and a yellow/amber banner **RAM buffer only — logs lost on reboot**. Export / Clear stay SD-only (they are hidden). Motors still protect. The OLED Fault Log uses the same RAM ring (also lost on reboot). Fault logs are never written to NVS.
 
 ### 5.5 Buzzer patterns
 
@@ -414,7 +437,7 @@ relays.cpp              Polarity-aware coil drive
 buzzer.cpp              Non-blocking LEDC tone sequencer
 sensing.cpp             Current ADC calibrate, true RMS (AC) or mean |i| (DC)
 voltage.cpp / voltage.h 2× ADS1115, i2cInitOnce, voltageReprobe, GAIN_ONE
-protection.cpp          I²t / stall / UV / OV / sensor-fault / NO_CURRENT / power
+protection.cpp          I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power
 motor_store.cpp         NVS blob + login credentials
 net_ap.cpp              SoftAP MPS-505 / mps50005
 sd_log.cpp              Optional /faults.csv
@@ -495,7 +518,9 @@ DC motors skip RMS and use the mean of |i| over 20 ms.
 
 ### 7.3 Stall
 
-If `I_rms >= stall_amps` after **one** sample window, trip type `STALL` immediately. No I²t wait. Typical use: locked rotor, many times In.
+If `I_rms >= stall_amps` after **one** sample window, trip type `STALL` immediately — unless stall recovery is enabled for that motor (see §5.2.1). No I²t wait on the stall path. Typical use without recovery: locked rotor, many times In.
+
+With stall recovery: after 500 ms of Running, up to 3 pulses (300 ms off, 500 ms wait). I²t still accumulates during pulses. Exhaustion trips `STALL` and enters Cooling. Jam attempts do not count as auto-restarts.
 
 ### 7.4 Sensor fault
 
@@ -541,6 +566,9 @@ Key points:
 ```
 Stopped --Start--> Running
 Running --Stop---> Stopped
+Running --stall, recovery On, after 500 ms run--> jam pulses (3× 300/500 ms)
+jam recovered --> Running (jam_count=0; auto-restart counter unchanged)
+jam exhausted --> Cooling as STALL
 Running --trip---> Cooling      relays OFF, log, fault tone
 Cooling --timer + auto-restart On and consecutive trips < 3 --> Running
 Cooling --timer + auto-restart Off or 3 consecutive trips--> Fault
@@ -568,11 +596,12 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | UV/OV grace | 250 ms after DC Start |
 | No-current trip | Running and max phase `< 0.05 × In` for 2 s |
 | Auto-restart cap | 3 consecutive trips, then Fault; 10 min clean run clears |
+| Stall recovery | 3 pulses, 300 ms off / 500 ms wait, 500 ms min run; default off |
 | Task WDT | 5 s on the protection task (hang → MCU reset, relays off) |
-| Fault log | `/faults.csv` — `uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA` |
+| Fault log | SD `/faults.csv` when present; else 32-entry RAM ring (`ram_only`) |
 | Power | DC `W` (true); AC `VA` (apparent at rated V); PF unknown |
 | Session energy | RAM only, `Wh`/`VAh`, resets on Start and reboot |
-| NVS namespace | `mps` (motors blob, auth_user, auth_pass), schema 2 |
+| NVS namespace | `mps` (motors blob, auth_user, auth_pass), schema 3 |
 
 ---
 
@@ -585,7 +614,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Login page rejects mps / mps500 | Credentials changed in NVS | Serial banner prints the current pair. Or erase flash / NVS |
 | Relays chatter or motors run at boot | Active-LOW module with default HIGH polarity | Set polarity to Active-LOW on Add/Edit, or invert the IN wiring |
 | Thermal % stuck / false SENSOR_FAULT with no motor | Uncalibrated zero or floating sense pin | Calibrate with no current. Ground unused sense inputs through the divider |
-| Log page yellow banner | No SD or 5 V fed to a 3.3 V breakout | Insert a FAT-formatted card on 3.3 V SPI; protection is unaffected |
+| Log page yellow banner “RAM buffer only” | No SD or 5 V fed to a 3.3 V breakout | Insert a FAT-formatted card on 3.3 V SPI for persistent CSV; RAM ring still shows last 32 trips |
 | Compile error `ledcChangeFrequency` | Mixing ESP32 core 2.x vs 3.x | Use Arduino-ESP32 3.x and `ledcAttach` / 3-arg `ledcChangeFrequency` |
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
 | DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 always 0x48, CH4–7 always 0x49. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
@@ -599,7 +628,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Live DC V reads ~19 % high vs a meter | Firmware still using the old 180 k / 10 k scale | Flash this tree (150 k / 10 k, scale 16) and recalibrate zeros |
 | Edit rejected "stall current must exceed In…" | Stall ≤ In or ≤ a protection-step current | Raise stall above In and every `k × In` |
 | Motor trips `NO_CURRENT` at Start | Sense wire open, ACS712 unpowered, or relay never closed | Check ACS712 5 V, sense wiring, and that the relay actually closes |
-| Motors vanished after this flash | NVS schema 2 vs v1 blob | Expected. Re-enter motors. Auth credentials are unchanged |
+| Motors vanished after this flash | NVS schema 3 vs v1/v2 blob | Expected. Re-enter motors. Auth credentials are unchanged |
 
 ---
 

@@ -21,6 +21,11 @@ Out of scope for the panel, unchanged:
 - Panel is status + basic control only; protection remains the only writer of
   relays, I²t, and trips
 
+## Built 2026-09-21 (stall recovery + RAM log)
+
+- Optional per-motor stall recovery (jam release): 3× 300/500 ms pulses after 500 ms of Running. Web Add/Edit checkbox. Not shown on OLED.
+- 32-entry RAM fault ring always written; web Log page serves it with `ram_only` when SD is missing.
+
 ## Still open
 
 - The `_HW_I2C` constructor takes only `(rotation, reset)`; SDA/SCL are set
