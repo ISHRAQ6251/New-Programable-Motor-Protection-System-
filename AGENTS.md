@@ -49,11 +49,11 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 
 NVS namespace `mps`, blob of `MotorRecord[8]`. Never stored on SD.
 
-Motor record: name, phase count (1 or 3), assigned channel indices, AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, cooling time, auto-restart, stall recovery (jam release, default off), per-channel relay polarity (default active-HIGH), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled).
+Motor record: name, phase count (1 or 3), assigned channel indices (Auto = lowest free, or pin `ch0`/`ch1`/`ch2` 0–7), AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, cooling time, auto-restart, stall recovery (jam release, default off), per-channel relay polarity (default active-HIGH), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled), optional `voltage_channel` (0–7 or `VCH_SAME` 0xFF = same as current CH0).
 
 Runtime (RAM): per-channel zero ADC, last RMS, I²t energy, voltage zero and last V; per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
 
-NVS schema **3** (older blobs are discarded on first boot of this build).
+NVS schema **4** (older blobs are discarded on first boot of this build).
 
 Statuses: Stopped, Running, Fault, Cooling.
 
@@ -77,11 +77,11 @@ Sensor fault (stuck ADC AC or DC, Vadc out of `[0.05, 3.05]` V, |I| > 40 A, miss
 
 Running and max phase current `< 0.05 × In` for 2 s → trip `NO_CURRENT` (broken sense wire / open winding / relay that never closed).
 
-DC only, after 250 ms of Running (relay just closed): `Vbus < uv_volts` (if uv > 0) → `UNDERVOLT`; `Vbus > ov_volts` (if ov > 0) → `OVERVOLT`. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared.
+DC only, after 750 ms of Running (relay just closed): 4-sample ADS average then 0.9/0.1 LPF on `Vbus`; `Vbus < uv_volts` (if uv > 0) → `UNDERVOLT`; `Vbus > ov_volts` (if ov > 0) → `OVERVOLT`. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared. `VOLT:` Serial every 2 s while Running.
 
 On trip: de-energize that motor's relay(s), `toneFault()`, append SD log if mounted, enter Cooling. After cooling: auto-restart if enabled **and** consecutive trips `< 3`, else Fault. A trip-free run of 10 min clears the restart counter; Start and Reset also clear it. Reset from UI clears Fault/Cooling to Stopped and silences the buzzer.
 
-Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds a 5 s Task WDT; a hang resets the MCU and `setup()` drops relays. Protection never depends on SD. Sample each running motor then trip immediately (not after every other channel). `dt` credited up to 5 s after a task stall.
+Fail-safe: all relay GPIOs forced LOW at the top of `setup()` (before `Serial.begin` / 200 ms delay), then `relaysBegin()`. Protection task feeds a 5 s Task WDT; a hang resets the MCU and `setup()` drops relays. Protection never depends on SD. Sample each running motor then trip immediately (not after every other channel). `dt` credited up to 5 s after a task stall.
 
 ## Current implementation status
 
@@ -89,18 +89,18 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds
 
 | Module | File | Status |
 |---|---|---|
-| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 3, UV/OV + rated AC, jam-release fields, VoltageSample |
-| Relays fail-safe | `relays.cpp` | done — OFF in `setup()` before Wi-Fi; polarity printed at de-energize |
+| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 4, UV/OV + rated AC, jam-release, `voltage_channel` / `VCH_SAME`, VoltageSample |
+| Relays fail-safe | `relays.cpp` | done — GPIO LOW at top of `setup()` then `relaysBegin()`; polarity printed at de-energize |
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
 | Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean; stuck-ADC Serial |
-| DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 20 ms conversion timeout, `s_i2c_mu` |
-| I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; optional jam release (3× 300/500 ms); 32-entry RAM trip ring; Calibrate calls `voltageReprobe()` off-mutex |
-| NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes; stall must exceed In/steps; cooling ≤ 86400 s; AP-password auth_pass restored to `mps500` |
+| DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 20 ms conversion timeout, `s_i2c_mu`, 4-sample average |
+| I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; optional jam release (3× 300/500 ms); 32-entry RAM trip ring; Calibrate calls `voltageReprobe()` off-mutex; 0.9/0.1 V LPF; 750 ms UV/OV grace; `VOLT:` log; dedicated `voltage_channel` |
+| NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes; stall must exceed In/steps; cooling ≤ 86400 s; AP-password auth_pass restored to `mps500`; manual `ch0`–`ch2` or Auto; `voltage_channel` |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
-| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`) |
+| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`); Add/Edit `ch0`–`ch2` + `vch` dropdowns |
 | Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire; KY-040 on 47/46/3; WS2812 on GPIO 48; 3-frame status icons; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
-| Sketch entry | `MotorProtection.ino` | done — mutex/queue init (`voltageI2cMutexInit` / `buzzerMutexInit` / `motorStoreMutexInit` / `protectionMutexInit` / `webMutexInit`) runs before any `begin()`; `uiBegin()` starts `uiTask` only after those handles exist |
+| Sketch entry | `MotorProtection.ino` | done — relay GPIOs LOW first; mutex/queue init (`voltageI2cMutexInit` / `buzzerMutexInit` / `motorStoreMutexInit` / `protectionMutexInit` / `webMutexInit`) runs before any `begin()`; `uiBegin()` starts `uiTask` only after those handles exist |
 
 Boot Serial prints AP SSID/password/IP, dashboard login (`mps` / `mps500`, **not** AP pass), and free heap (`HEAP:`). Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected.
 
