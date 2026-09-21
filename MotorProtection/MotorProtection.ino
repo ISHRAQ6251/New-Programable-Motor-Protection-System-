@@ -14,6 +14,7 @@
  *   AsyncTCP           (ESP32Async)
  *   Adafruit ADS1X15
  *   Adafruit BusIO     (dependency of ADS1X15)
+ *   U8g2               (for the local SH1106 OLED panel)
  *
  * SoftAP: MPS-505 / mps50005   dashboard: http://192.168.4.1
  * Default dashboard login: mps / mps500  (themed /login page, session cookie)
@@ -31,6 +32,7 @@
 #include "sd_log.h"
 #include "net_ap.h"
 #include "web.h"
+#include "ui.h"
 
 void setup() {
   Serial.begin(115200);
@@ -38,8 +40,16 @@ void setup() {
 
   relaysBegin();
   buzzerBegin();
+  uiBegin();
   sensingBegin();
   voltageBegin();
+  {
+    char note[48];
+    snprintf(note, sizeof(note), "ADS 0x48 %s / 0x49 %s",
+             voltageAdsOk(0) ? "ok" : "missing",
+             voltageAdsOk(1) ? "ok" : "missing");
+    uiBootNote(note);
+  }
   motorStoreBegin();
   {
     MotorRecord motors[MAX_MOTORS];
@@ -61,9 +71,13 @@ void setup() {
     }
     relaysDeenergizeAll(pol);
   }
+  uiBootStage(UI_BOOT_RELAYS);
+  uiBootStage(UI_BOOT_ADS);
   sdLogBegin();
+  uiBootStage(UI_BOOT_SD);
   protectionBegin();
   protectionSetSdOk(sdLogOk() ? 1 : 0);
+  uiBootStage(UI_BOOT_CAL);
 
   netApBegin();
   webBegin();
@@ -76,6 +90,7 @@ void setup() {
   netApPrintBanner(user, pass);
   Serial.printf("HEAP: boot=%u\n", (unsigned)ESP.getFreeHeap());
 
+  uiBootStage(UI_BOOT_DONE);
   tonePowerUp();
 }
 

@@ -368,29 +368,10 @@ static void handleCmd(AsyncWebServerRequest *req, CmdType t) {
   if (t == CMD_START) {
     StatusSnapshot snap;
     protectionSnapshot(&snap);
-    if (snap.motors[idx].used && !snap.motors[idx].is_ac) {
-      bool ads_ok = true;
-      bool vcal = true;
-      for (int p = 0; p < snap.motors[idx].phase_count; p++) {
-        const uint8_t c = snap.motors[idx].channels[p];
-        if (c >= MAX_CHANNELS) {
-          continue;
-        }
-        if (!snap.ads_ok[c < 4 ? 0 : 1]) {
-          ads_ok = false;
-        }
-        if (!snap.v_calibrated[c]) {
-          vcal = false;
-        }
-      }
-      if (!ads_ok) {
-        sendErr(req, "DC start needs the ADS1115 for this motor's channels");
-        return;
-      }
-      if (!vcal) {
-        sendErr(req, "calibrate DC voltage zeros first");
-        return;
-      }
+    const char *reason = nullptr;
+    if (!protectionCanStart(snap, idx, &reason)) {
+      sendErr(req, reason ? reason : "cannot start");
+      return;
     }
   }
   if (!protectionPost(t, (uint8_t)idx)) {

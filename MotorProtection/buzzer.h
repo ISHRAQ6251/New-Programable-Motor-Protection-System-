@@ -11,4 +11,5 @@ void toneMotorAdded();
 void toneMotorStarted();
 void toneMotorStopped();
 void toneClick();
+void toneBack();
 void toneSilence();

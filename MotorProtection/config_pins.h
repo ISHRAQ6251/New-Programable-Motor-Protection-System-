@@ -33,6 +33,27 @@ static const int PIN_BUZZER = 21;
 #define ADS1115_ADDR_B 0x49
 #endif
 
+// Local panel: KY-040 rotary encoder. The module carries its own pull-ups on
+// all three lines, so plain INPUT (no internal pull-up, no external resistors).
+static const int ENC_A_PIN  = 22;  // CLK
+static const int ENC_B_PIN  = 23;  // DT
+static const int ENC_SW_PIN = 24;  // SW (active-LOW when pressed)
+
+// Local panel: SH1106 128x64 OLED on a SECOND, independent I2C bus (Wire1).
+// Physically separate from the ADS1115 bus (GPIO 14/42), so no mutex is shared.
+#ifndef OLED_SDA_PIN
+#define OLED_SDA_PIN 25
+#endif
+#ifndef OLED_SCL_PIN
+#define OLED_SCL_PIN 47
+#endif
+#ifndef OLED_I2C_ADDR
+#define OLED_I2C_ADDR 0x3C
+#endif
+#ifndef OLED_I2C_HZ
+#define OLED_I2C_HZ 400000
+#endif
+
 // Analog path: ACS712-30A 66 mV/A, 10k/15k divider (x0.6) => 39.6 mV/A at ADC.
 static const float ACS712_MV_PER_AMP = 66.0f;
 static const float DIVIDER_RATIO     = 0.6f;

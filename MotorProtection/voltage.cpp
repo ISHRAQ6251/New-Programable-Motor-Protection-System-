@@ -9,6 +9,7 @@
 
 static Adafruit_ADS1115 s_ads[2];
 static uint8_t s_ok[2] = {0, 0};
+static uint8_t s_err[2] = {0, 0};
 static uint8_t s_i2c_initialized = 0;
 static const uint8_t kAddr[2] = {ADS1115_ADDR_A, ADS1115_ADDR_B};
 
@@ -32,7 +33,7 @@ static uint8_t i2cProbe(uint8_t addr) {
   return Wire.endTransmission();
 }
 
-static const char *i2cErrLabel(uint8_t e) {
+const char *voltageI2cErrLabel(uint8_t e) {
   switch (e) {
     case 0: return "ok";
     case 1: return "data too long";
@@ -82,16 +83,19 @@ void voltageBegin() {
     const uint8_t err = i2cProbe(kAddr[i]);
     if (err != 0) {
       Serial.printf("ADS: 0x%02X not found (I2C err=%u %s)\n",
-                    kAddr[i], (unsigned)err, i2cErrLabel(err));
+                    kAddr[i], (unsigned)err, voltageI2cErrLabel(err));
       s_ok[i] = 0;
+      s_err[i] = err;
       continue;
     }
     if (!adsInitChip(i)) {
       Serial.printf("ADS: 0x%02X begin() failed\n", kAddr[i]);
       s_ok[i] = 0;
+      s_err[i] = err;
       continue;
     }
     s_ok[i] = 1;
+    s_err[i] = 0;
     Serial.printf("ADS: 0x%02X ok GAIN_ONE 250SPS\n", kAddr[i]);
   }
 
@@ -109,21 +113,30 @@ void voltageReprobe() {
     if (now_ok && !s_ok[i]) {
       if (adsInitChip(i)) {
         s_ok[i] = 1;
+        s_err[i] = 0;
         Serial.printf("ADS: 0x%02X re-probed ok\n", kAddr[i]);
       } else {
         s_ok[i] = 0;
+        s_err[i] = err;
         Serial.printf("ADS: 0x%02X begin() failed on re-probe\n", kAddr[i]);
       }
     } else if (!now_ok && s_ok[i]) {
       s_ok[i] = 0;
+      s_err[i] = err;
       Serial.printf("ADS: 0x%02X lost (I2C err=%u %s)\n",
-                    kAddr[i], (unsigned)err, i2cErrLabel(err));
+                    kAddr[i], (unsigned)err, voltageI2cErrLabel(err));
+    } else if (!now_ok) {
+      s_err[i] = err;
     }
   }
 }
 
 bool voltageAdsOk(int chip) {
   return chip >= 0 && chip < 2 && s_ok[chip];
+}
+
+uint8_t voltageAdsErr(int chip) {
+  return (chip >= 0 && chip < 2) ? s_err[chip] : 0;
 }
 
 static int chipOf(int ch) {

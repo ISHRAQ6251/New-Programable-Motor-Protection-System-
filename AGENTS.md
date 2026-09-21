@@ -12,13 +12,14 @@ University firmware project: replace a bimetallic thermal overload relay with an
 - Live DC voltage (ADS1115) with optional UV/OV trip; AC rated voltage is a manual NVS field only
 - Power: DC true `W`; AC apparent `VA` at rated V; energy RAM-only
 - Desktop web dashboard on a fixed SoftAP (`MPS-505` / `mps50005`)
+- Local panel: SH1106 128x64 OLED on a second I2C bus (`Wire1`) + KY-040 encoder (rotate / short / long press), with buzzer feedback
 - Themed `/login` page + HttpOnly session cookie (`mps` / `mps500` default)
 - Motor config in NVS; SD card used only for fault logs
-- Arduino IDE sketch, dual FreeRTOS task split
+- Arduino IDE sketch, three FreeRTOS tasks (Wi-Fi/UI core 0, protection/loop core 1)
 
 Hardware is treated as already wired. This repo is firmware only.
 
-Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2), `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta), `docs/superpowers/specs/2026-09-14-power-display-design.md` (power display / logging). Roadmap: `docs/ROADMAP.md` (OLED + rotary encoder, not in this build). I²C bench: `docs/I2C_TROUBLESHOOTING.md`.
+Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2), `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta), `docs/superpowers/specs/2026-09-14-power-display-design.md` (power display / logging), `docs/superpowers/specs/2026-09-20-oled-encoder-local-panel-design.md` (local OLED + encoder panel). Roadmap: `docs/ROADMAP.md`. I²C bench: `docs/I2C_TROUBLESHOOTING.md`.
 
 License: MIT (`LICENSE`). Project overview: `README.md`. User-facing guide: `docs/USER_MANUAL.md`.
 
@@ -35,6 +36,8 @@ Avoid GPIO 0/3/45/46 (strapping), 19/20 (USB-JTAG), 43/44 (UART0 Serial).
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 | SPI, 3.3 V breakout, not SDIO |
 | Buzzer | 21 | Passive, LEDC PWM |
 | I²C SDA / SCL | **14 / 42** | `Wire.begin(14, 42)` once via `i2cInitOnce()` — **not** default 8/9 |
+| OLED SDA / SCL | **25 / 47** | Second bus `Wire1` (`Wire1.begin(25, 47)`), ADS1115 bus untouched |
+| Encoder CLK / DT / SW | 22 / 23 / 24 | KY-040, plain `INPUT` (module has onboard pull-ups) |
 
 DC voltage: 2× ADS1115 over that I²C bus. **0x48** (ADDR→GND) = CH0–3 AIN0–3; **0x49** (ADDR→VDD) = CH4–7 AIN0–3. Gain `GAIN_ONE` (±4.096 V). Divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~3.13 V. Tap is each motor **terminal downstream of its relay**, not the shared bus.
 
@@ -95,14 +98,15 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds
 | NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes; stall must exceed In/steps; cooling ≤ 86400 s; AP-password auth_pass restored to `mps500` |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
-| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form; `s_json` 8192 B; `/api/motor/add` |
+| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()` |
+| Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire1; KY-040 state-table decode; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
 | Sketch entry | `MotorProtection.ino` | done |
 
 Boot Serial prints AP SSID/password/IP, dashboard login (`mps` / `mps500`, **not** AP pass), and free heap (`HEAP:`). Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected.
 
 Protection samples current ADC and ADS1115 **outside** the status mutex (copy channel zeros, sample, then re-lock to apply I²t / UV / OV). Calibrate copies channels out, calls `voltageReprobe()` (scan + probe, no `Wire.end()`), then ADC + ADS zeros, copies zeros back. Channel map is fixed: CH0–3 always 0x48, CH4–7 always 0x49. Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins; firmware re-binds `Wire.begin(14, 42)` after each `begin()` and never calls `Wire.end()`. `loop()` prints `I2C: diag ads_ok=[…] vcal=[…]` at most every 5 s when a chip or channel zero is not ready. Buzzer uses Arduino-ESP32 3.x LEDC: `ledcAttach(pin,freq,res)`, `ledcWrite(pin,duty)`, `ledcChangeFrequency(PIN_BUZZER, freq, 10)` (3-arg).
 
-Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**, Core Debug Level **Debug**. Libraries: ESPAsyncWebServer + AsyncTCP (ESP32Async forks), Adafruit ADS1X15 + Adafruit BusIO.
+Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**, Core Debug Level **Debug**. Libraries: ESPAsyncWebServer + AsyncTCP (ESP32Async forks), Adafruit ADS1X15 + Adafruit BusIO, U8g2 (SH1106 panel). The panel runs in `uiTask` on core 0 and reaches motor state only through `protectionSnapshot()` / `protectionCopyLog()`; `setup()` publishes relay / ADS / SD / calibration results to the splash via `uiBootStage()` / `uiBootNote()`.
 
 User-facing guide: `docs/USER_MANUAL.md`.
 
@@ -110,7 +114,12 @@ User-facing guide: `docs/USER_MANUAL.md`.
 
 ```
 MotorProtection/voltage.cpp   i2cInitOnce, voltageBegin, voltageReprobe, sample
-MotorProtection/voltage.h     VoltageSample, voltageReprobe, types.h include
+MotorProtection/voltage.h     VoltageSample, voltageReprobe, voltageAdsErr, types.h include
+MotorProtection/protection.cpp I²t/stall/UV/OV/power; protectionCanStart, trip ring buffer
+MotorProtection/ui.cpp        uiTask: OLED + encoder panel, boot splash + six screens
+MotorProtection/ui.h          UiBootStage, uiBegin/uiTask/uiBootStage/uiBootNote
+MotorProtection/ui_icons.h    8x8 XBM status + AP icons
+MotorProtection/buzzer.cpp    named tones + toneBack, cross-core sequencer mutex
 MotorProtection/web.cpp       /api/motor/add after /edit and /del; s_json 8192
 MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 ```
@@ -126,7 +135,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Relay default active-HIGH, OFF=LOW
 - Mains frequency selectable per motor
 - Classic I²t energy (not inverse-time interpolation, not independent step timers)
-- Dual-task architecture
+- FreeRTOS task architecture: protection + `loop()` on core 1, Wi-Fi + UI on core 0 (originally two tasks; panel adds `uiTask`)
 - SoftAP only — no STA, no WiFiManager, no DDNS
 - AP SSID/password **fixed** `MPS-505` / `mps50005` (not MAC-derived; WPA2 min 8 chars)
 - Stall = immediate next RMS window
@@ -156,9 +165,12 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Buzzer frequencies as named functions in the design spec (1 kHz fault, short chirps)
 - Live status poll interval ≈ 1 s
 - Security page exists to change dashboard login credentials (invalidates session)
-- Core assignment: Wi-Fi on core 0, protection + loop on core 1
+- Core assignment: Wi-Fi + UI on core 0, protection + loop on core 1
 - `MPS_TEST_HOOKS` compile flag is optional and not required for v1
-- Future OLED SSD1306 at 0x3C and KY-040 encoder are planned only (`docs/ROADMAP.md`); do not implement without asking
+- Local panel: SH1106 (**not** SSD1306) on a second bus `Wire1` GPIO 25/47 via U8g2 `2ND_HW_I2C`; KY-040 on GPIO 22/23/24 with a state-table quadrature decoder (one step per detent) and 40 ms switch debounce, 600 ms long-press threshold
+- `protectionCanStart()` is the single Start gate shared by the web API and the panel; `protectionCopyLog()` exposes a non-destructive 16-entry RAM trip ring (the SD `protectionPopLog()` queue keeps its single consumer in `loop()`)
+- `buzzer.cpp` guards its sequencer with a mutex because `uiTask` (core 0) and `loop()` (core 1) both issue tones; panel Start/Stop success tone comes from protection, not the panel, so it is not doubled
+- Panel boot stages are published from `setup()` via `uiBootStage()` / `uiBootNote()`; the splash reveals them, then auto-advances to Home
 
 ### Escalated, then closed
 
@@ -171,7 +183,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 
 - Exact Arduino IDE board-menu checkboxes beyond Flash 16 MB / OPI PSRAM (USB CDC on boot, etc.) — documented as Dev Module defaults in `docs/USER_MANUAL.md`
 - Physical SD card on first bench test — firmware treats missing card as valid
-- OLED + rotary encoder (`docs/ROADMAP.md`) — not started
+- Exact U8g2 symbol for the SH1106 `2ND_HW_I2C` variant — constructor is `(rotation, reset)`; pins are bound on `Wire1`. `_SW_I2C` only if `Wire1` is genuinely unavailable
 
 ## Bench notes (do not regress)
 
@@ -184,6 +196,11 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Missing SD is a warning, not a boot failure.
 - Motor API routes must never be prefixes of one another. `/api/motor` collided with `/api/motor/edit` and `/api/motor/del`. Add is `/api/motor/add`; register `/edit` and `/del` first.
 - If Serial ever printed `dash pass: mps50005`, that was AP password leaking into NVS `auth_pass`. Load now restores `mps500` when `auth_pass` equals `AP_PASS`.
+- The panel uses `Wire1` with `Wire1.begin(25, 47)`, re-bound after `u8g2.begin()` (same BusIO-style precaution as the ADS bus). It must never call `Wire.begin()` or `Wire.end()`; the ADS bus is untouched.
+- Panel Start must call `protectionCanStart()`; do not re-implement the ADS/vcal check in `ui.cpp`.
+- Panel Start/Stop success tones come from protection (`TONE_STARTED` / `TONE_STOPPED`). Do not also call `toneMotorStarted()` / `toneMotorStopped()` from `uiTask`, or the beep doubles.
+- KY-040 pins are plain `INPUT`; the module has its own pull-ups. Adding internal pull-ups can fight them.
+- `uiTask` is not on the Task WDT; only the protection task is.
 
 ## Next planned steps
 
@@ -193,6 +210,10 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 4. DC: apply voltage downstream of a closed relay; confirm live V and UV/OV trips (0 = disabled)
 5. Confirm missing-SD path (log page banner) and present-SD CSV write
 6. Power: DC known load vs bench meter; AC hand-check `V_rated × I_rms`; 3-phase current-unbalance check; trip CSV carries `power_W` / `power_VA`; energy reads `0.00` after reboot
-7. Later (not this build): OLED SSD1306 0x3C + KY-040 encoder per `docs/ROADMAP.md`
+7. Local panel: confirm SH1106 at 0x3C on `Wire1` (26/47 pins), encoder detents/tones, the shared Start gate, and the staged splash
+
+## Changelog
+
+- 2026-09-20 — Local OLED + encoder panel: `ui.cpp`/`ui.h`/`ui_icons.h` `uiTask` on core 0, SH1106 on `Wire1` (GPIO 25/47), KY-040 on 22/23/24, boot splash + Home/Per-motor/Fault Log/Diagnostics/Firmware/Network screens, `toneBack()`, shared `protectionCanStart()` gate, non-destructive `protectionCopyLog()` ring, cross-core buzzer mutex, U8g2 dependency.
 
 Last firmware: I²C `i2cInitOnce` / `voltageReprobe` / no `Wire.end()` (origin `455debf` and follow-up quality), on top of Calibrate re-probe (`2f53bc7`), divider 150 kΩ / 10 kΩ (`b5e3754`), and safety review (`912a982`).

@@ -1,0 +1,28 @@
+#pragma once
+
+#include <stdint.h>
+
+// 8x8 XBM icons (row-major, LSB = leftmost pixel) for the local SH1106 panel.
+// Only the four MotorStatus states get dedicated icons; a FaultType is always
+// shown as the warning-triangle icon plus a short text abbreviation.
+
+static const uint8_t ICON_STOPPED[8] = {
+  0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF
+};
+
+static const uint8_t ICON_RUNNING[8] = {
+  0x01, 0x03, 0x07, 0x0F, 0x1F, 0x0F, 0x07, 0x03
+};
+
+static const uint8_t ICON_FAULT[8] = {
+  0x08, 0x08, 0x1C, 0x1C, 0x3E, 0x3E, 0x7F, 0x00
+};
+
+static const uint8_t ICON_COOLING[8] = {
+  0x08, 0x2A, 0x1C, 0x7F, 0x7F, 0x1C, 0x2A, 0x08
+};
+
+// Small SoftAP glyph for the header status area.
+static const uint8_t ICON_AP[8] = {
+  0x00, 0x3C, 0x42, 0x99, 0x81, 0x3C, 0x00, 0x18
+};

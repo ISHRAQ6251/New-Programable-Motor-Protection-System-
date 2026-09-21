@@ -31,6 +31,15 @@ static volatile ToneId s_tone = TONE_NONE;
 static volatile uint8_t s_calibrated = 0;
 static volatile uint8_t s_sd_ok = 0;
 
+// Non-destructive copy of the most recent trips, for the local panel. The
+// s_log_q queue above is single-consumer (loop() drains it to SD); the panel
+// must never steal from it. Writes happen in pushLog(), which its callers run
+// with s_mu held.
+static const int LOG_RING = 16;
+static LogEvent s_log_ring[LOG_RING];
+static int s_log_head = 0;
+static int s_log_count = 0;
+
 static void setTone(ToneId id) {
   s_tone = id;
 }
@@ -48,6 +57,11 @@ static void pushLog(int mi, FaultType ft, float current_a, float voltage_v,
   ev.motor[NAME_LEN - 1] = 0;
   if (s_log_q) {
     xQueueSend(s_log_q, &ev, 0);
+  }
+  s_log_ring[s_log_head] = ev;
+  s_log_head = (s_log_head + 1) % LOG_RING;
+  if (s_log_count < LOG_RING) {
+    s_log_count++;
   }
 }
 
@@ -603,6 +617,65 @@ void protectionSnapshot(StatusSnapshot *out) {
 
 bool protectionPopLog(LogEvent *out) {
   return xQueueReceive(s_log_q, out, 0) == pdTRUE;
+}
+
+int protectionCopyLog(LogEvent *out, int max) {
+  if (!out || max <= 0) {
+    return 0;
+  }
+  xSemaphoreTake(s_mu, portMAX_DELAY);
+  int n = (s_log_count < max) ? s_log_count : max;
+  for (int i = 0; i < n; i++) {
+    const int idx = (s_log_head - 1 - i + 2 * LOG_RING) % LOG_RING;
+    out[i] = s_log_ring[idx];
+  }
+  xSemaphoreGive(s_mu);
+  return n;
+}
+
+// Shared Start gate: the web API and the local panel must enforce the same
+// DC-readiness rule. Returns true when the command may be queued; when false,
+// *reason holds a short human-readable cause for the caller to surface.
+bool protectionCanStart(const StatusSnapshot &snap, int idx, const char **reason) {
+  if (reason) {
+    *reason = nullptr;
+  }
+  if (idx < 0 || idx >= MAX_MOTORS) {
+    if (reason) {
+      *reason = "bad motor index";
+    }
+    return false;
+  }
+  if (!snap.motors[idx].used || snap.motors[idx].is_ac) {
+    return true;
+  }
+  bool ads_ok = true;
+  bool vcal = true;
+  for (int p = 0; p < snap.motors[idx].phase_count; p++) {
+    const uint8_t c = snap.motors[idx].channels[p];
+    if (c >= MAX_CHANNELS) {
+      continue;
+    }
+    if (!snap.ads_ok[c < 4 ? 0 : 1]) {
+      ads_ok = false;
+    }
+    if (!snap.v_calibrated[c]) {
+      vcal = false;
+    }
+  }
+  if (!ads_ok) {
+    if (reason) {
+      *reason = "DC start needs the ADS1115 for this motor's channels";
+    }
+    return false;
+  }
+  if (!vcal) {
+    if (reason) {
+      *reason = "calibrate DC voltage zeros first";
+    }
+    return false;
+  }
+  return true;
 }
 
 ToneId protectionTakeTone() {

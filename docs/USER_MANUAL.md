@@ -14,6 +14,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 - Motor settings live in on-chip flash (NVS). They survive power cycles even if the SD card is missing.
 - The SD card is used **only** for a fault-history CSV. Missing card: protection and dashboard still run; the Log page shows "unavailable".
 - Access is local Wi-Fi only: the ESP32 creates network `MPS-505`. There is no router join, no cloud, no DDNS.
+- A local **SH1106 OLED + KY-040 encoder** panel shows status and allows Start/Stop at the enclosure. The dashboard stays the full configuration UI (motor add/edit, security).
 
 ---
 
@@ -76,6 +77,11 @@ All GPIO numbers exist only in `MotorProtection/config_pins.h`. Changing a pin m
 | Buzzer | 21 | PWM (LEDC) | Passive buzzer |
 | I²C SDA | 14 | I²C | ADS1115 — not ESP32 default GPIO 8 |
 | I²C SCL | 42 | I²C | ADS1115 — not ESP32 default GPIO 9 |
+| OLED SDA | 25 | I²C (Wire1) | SH1106 panel — separate second bus |
+| OLED SCL | 47 | I²C (Wire1) | |
+| Encoder CLK | 22 | Digital in | KY-040 A, plain `INPUT` (module pull-up) |
+| Encoder DT | 23 | Digital in | KY-040 B |
+| Encoder SW | 24 | Digital in | KY-040 switch, active-LOW when pressed |
 | USB / Serial | 19, 20, 43, 44 | reserved | Do not reassign |
 
 ### 2.4 Analog front-end (every current channel)
@@ -202,6 +208,7 @@ Open the sketch folder `MotorProtection/` (the `.ino` plus the `.cpp` / `.h` fil
 | **AsyncTCP** | ESP32Async | Yes (dependency of the server) |
 | **Adafruit ADS1X15** | Adafruit | Yes (DC voltage) |
 | **Adafruit BusIO** | Adafruit | Yes (dependency of ADS1X15) |
+| **U8g2** | olikraus | Yes (local OLED panel) |
 
 Built in with the ESP32 core (do not install separately):
 
@@ -212,6 +219,7 @@ Built in with the ESP32 core (do not install separately):
 | SD, SPI, FS | Optional fault CSV |
 | LEDC (esp32-hal-ledc) | Buzzer PWM |
 | Wire | I²C for ADS1115 (pins 14 / 42) |
+| Wire1 | I²C for the SH1106 panel (pins 25 / 47) |
 
 If compile fails on Arduino-ESP32 3.x, use the maintained **ESP32Async** forks of both libraries, not the older me-no-dev copies.
 
@@ -358,6 +366,33 @@ No card: Log page shows a yellow banner. Motors still protect.
 | Started | Rising chirp |
 | Stopped | Falling chirp |
 | UI click | 20 ms tick |
+| Panel back (long press) | Short two-note descending blip |
+
+### 5.6 Local panel (SH1106 OLED + KY-040 encoder)
+
+The panel gives at-a-glance status and Start/Stop without a laptop. It is optional: if the OLED is missing the firmware keeps running and the web dashboard still works.
+
+Controls:
+
+- **Rotate** — move the selection, cycle motors, or scroll.
+- **Short press** — on Home, open the highlighted row; on Per-motor, Start/Stop that motor; on the info screens, nothing.
+- **Long press (~0.6 s)** — go back to Home.
+
+Screens:
+
+- **Boot splash** — relay fail-safe, ADS1115 probe, SD mount, calibration, then auto-advance to Home.
+- **Home** — one row per motor (status icon + name), then Fault Log / Diagnostics / Firmware Info / Network Info.
+- **Per-motor** — status, live current, segmented thermal bar, DC volts and power (or rated V / VA).
+- **Fault Log** — most recent trips first, with fault type, current, and voltage.
+- **Diagnostics** — 0x48/0x49 found or missing (with the I2C error label), per-channel DC calibration, SD mounted, free heap.
+- **Firmware Info** — build date/time and uptime.
+- **Network Info** — SoftAP SSID/password, AP IP, and the dashboard login.
+
+Status is shown as an icon: square = Stopped, triangle = Running, warning triangle = Fault, snowflake = Cooling. A fault also shows a short word (`I2T`, `STALL`, `SENSOR`, `UNDER-V`, `OVER-V`, `NO-I`).
+
+A Start is refused with a short on-screen reason and a fault beep when a DC motor's ADS1115 or voltage calibration is not ready — the same rule the dashboard enforces.
+
+The panel uses a separate I2C bus (GPIO 25/47) and never touches the ADS1115 bus. If the display stays blank, check the address (0x3C) and the library notes in `docs/ROADMAP.md`.
 
 ---
 
@@ -378,26 +413,29 @@ protection.cpp          I²t / stall / UV / OV / sensor-fault / NO_CURRENT / pow
 motor_store.cpp         NVS blob + login credentials
 net_ap.cpp              SoftAP MPS-505 / mps50005
 sd_log.cpp              Optional /faults.csv
+ui.cpp / ui.h           Local panel: uiTask, OLED + encoder, boot splash + screens
+ui_icons.h              8x8 XBM status and AP icons
 web.cpp / web_html.h    Async HTTP, session login, dashboard HTML
 ```
 
 Boot order in `setup()` (order matters for fail-safe):
 
 1. Relays: all pins OUTPUT LOW
-2. Buzzer, current ADC, ADS1115 (`i2cInitOnce()` → GPIO 14/42)
+2. Buzzer, local panel (`uiBegin()` starts `uiTask` and the boot splash), current ADC, ADS1115 (`i2cInitOnce()` → GPIO 14/42)
 3. NVS load (empty list if missing/corrupt/schema mismatch — never invents motors)
-4. De-energize relays using stored polarities
+4. De-energize relays using stored polarities; publish boot stages to the splash
 5. Try SD mount (failure is a warning only)
 6. Calibrate current and DC voltage zeros, start protection task (priority 5, core 1)
 7. SoftAP + web server
-8. Print banner, play power-up tone
+8. Print banner, finish the splash, play power-up tone
 
-Two tasks after boot:
+Three tasks after boot:
 
 - **Protection task** — sample current ADC and ADS1115 **outside** the status mutex, then apply I²t / stall / UV / OV / sensor-fault. Never writes SD or HTTP.
+- **`uiTask`** — core 0: poll the encoder, render the OLED, and post Start/Stop through the shared gate. Reads state only through the snapshot.
 - **`loop()`** — play queued buzzer tones, append SD log lines, keep the async web server running.
 
-Web handlers enqueue `START` / `STOP` / `RESET` / `CALIBRATE` / `RELOAD`. The dashboard reads a mutex-guarded snapshot (RMS, DC volts, status, thermal %, heap, SD flag, ADS ok).
+Web handlers and the local panel enqueue `START` / `STOP` / `RESET` / `CALIBRATE` / `RELOAD`. Both read a mutex-guarded snapshot (RMS, DC volts, status, thermal %, heap, SD flag, ADS ok) and share `protectionCanStart()` before a Start.
 
 ---
 
@@ -547,6 +585,9 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
 | DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 always 0x48, CH4–7 always 0x49. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
 | `I2C: diag ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / SDA-SCL swap / missing pull-ups |
+| OLED blank / no local panel | U8g2 not installed, wrong address, or library lacks the SH1106 `2ND_HW_I2C` variant | Confirm 0x3C on `Wire1` (GPIO 25/47). See `docs/ROADMAP.md` for the SW-I2C fallback |
+| Encoder direction reversed | CLK/DT swapped for your module | Swap the CLK and DT wires. Bounce is already absorbed by the state-table decoder |
+| Panel shows `DC start needs the ADS1115…` | Same DC-readiness gate as the dashboard | Populate/repair the ADS1115, then press Calibrate |
 | Login page rejects mps / mps500 after a flash that printed `dash pass: mps50005` | NVS `auth_pass` was the AP password | This build restores `mps500` when `auth_pass` equals the AP password |
 | Live DC V stuck at 0 with motor running | Tap is upstream of the relay, or not calibrated | Tap **downstream** of the relay. Calibrate with motors Stopped |
 | Live DC V reads ~19 % high vs a meter | Firmware still using the old 180 k / 10 k scale | Flash this tree (150 k / 10 k, scale 16) and recalibrate zeros |

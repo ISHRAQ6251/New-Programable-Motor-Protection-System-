@@ -6,7 +6,7 @@ The MCU measures current on up to eight ACS712-30A sensors, live DC voltage on e
 
 This repository is **firmware and documentation only**. Hardware is assumed already wired.
 
-Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.md`. I²C bench notes: `docs/I2C_TROUBLESHOOTING.md`. Future OLED + encoder: `docs/ROADMAP.md`.
+Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.md`. I²C bench notes: `docs/I2C_TROUBLESHOOTING.md`. Local panel design: `docs/superpowers/specs/2026-09-20-oled-encoder-local-panel-design.md`.
 
 ## Features
 
@@ -21,8 +21,9 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - **Power** display and fault-log columns: true `W` for DC (`V × I`), apparent `VA` at rated V for AC (PF unknown, never shown as `W`)
 - Desktop dashboard on SoftAP `MPS-505` / `mps50005`
 - Themed `/login` page + HttpOnly session cookie (default `mps` / `mps500`)
+- Local **SH1106 OLED + KY-040 encoder** panel (status + Start/Stop) on a second I²C bus, with buzzer feedback
 - Motor config in NVS; protection still runs if the SD card is missing
-- Dual FreeRTOS task split: protection never blocks on SD or HTTP
+- Three FreeRTOS tasks: Wi-Fi + UI on core 0, protection + `loop()` on core 1
 - Relays fail-safe OFF in `setup()` before Wi-Fi starts
 
 ## Hardware
@@ -85,7 +86,7 @@ Power: DC `P = Vdc × I_dc` (`W`); AC 1-phase `S = V_rated × I_rms` (`VA`); AC 
 
 1. Install **esp32 by Espressif Systems** (Arduino-ESP32 **3.x**) from Boards Manager.
 2. Board: **ESP32S3 Dev Module**. Flash **16MB (128Mb)**. PSRAM **OPI PSRAM**. Core Debug Level **Debug**.
-3. Library Manager: **ESPAsyncWebServer** and **AsyncTCP** (ESP32Async forks), **Adafruit ADS1X15** and **Adafruit BusIO**.
+3. Library Manager: **ESPAsyncWebServer** and **AsyncTCP** (ESP32Async forks), **Adafruit ADS1X15** and **Adafruit BusIO**, **U8g2** (local OLED panel).
 4. Open the sketch folder `MotorProtection/` and upload.
 
 Built-in (do not install separately): WiFi, Preferences, SD, SPI, LEDC.
@@ -138,8 +139,8 @@ MotorProtection/          Arduino IDE sketch (firmware)
   web.cpp, web_html.h     Session login + dashboard (HTML/JS)
 docs/USER_MANUAL.md       Pins, wiring, libraries, user guide, I²t math
 docs/I2C_TROUBLESHOOTING.md  Wire.end() lesson, SDA/SCL swap, ADDR, scan
-docs/ROADMAP.md           Future OLED (0x3C) + KY-040 encoder
-docs/superpowers/specs/   Approved design specs (v1 + v2 + power)
+docs/ROADMAP.md           Remaining ideas not yet built
+docs/superpowers/specs/   Approved design specs (v1 + v2 + power + panel)
 AGENTS.md                 Project source of truth for contributors
 LICENSE                   MIT
 ```
@@ -177,6 +178,7 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - Web: `/login` + cookie (not HTTP Basic); add endpoint `/api/motor/add`
 - I²C: `i2cInitOnce()` once; never `Wire.end()`; Calibrate calls `voltageReprobe()`
 - NVS schema 2
+- Local panel: SH1106 128x64 on `Wire1` (GPIO 25/47) + KY-040 encoder on 22/23/24; shared `protectionCanStart()` gate; `toneBack()`; U8g2 (2026-09-20)
 
 ## License
 

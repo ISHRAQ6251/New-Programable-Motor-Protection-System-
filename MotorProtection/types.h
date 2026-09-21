@@ -36,6 +36,7 @@ enum ToneId : uint8_t {
   TONE_STARTED,
   TONE_STOPPED,
   TONE_CLICK,
+  TONE_BACK,
   TONE_SILENCE
 };
 

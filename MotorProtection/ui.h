@@ -1,0 +1,23 @@
+#pragma once
+
+#include <stdint.h>
+
+// Local status/control panel: SH1106 128x64 OLED on Wire1 plus a KY-040
+// rotary encoder. Runs in its own task on core 0 and reads motor state only
+// through the mutex-protected protectionSnapshot()/protectionCopyLog() APIs.
+
+enum UiBootStage : uint8_t {
+  UI_BOOT_SPLASH = 0,
+  UI_BOOT_RELAYS,
+  UI_BOOT_ADS,
+  UI_BOOT_SD,
+  UI_BOOT_CAL,
+  UI_BOOT_DONE
+};
+
+void uiBegin();
+void uiTask(void *arg);
+
+// Called from setup() as each early boot step completes; the splash polls this.
+void uiBootStage(UiBootStage stage);
+void uiBootNote(const char *text);

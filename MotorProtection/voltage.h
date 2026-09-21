@@ -20,5 +20,7 @@ struct VoltageSample {
 void voltageBegin();
 void voltageReprobe();
 bool voltageAdsOk(int chip);
+uint8_t voltageAdsErr(int chip);
+const char *voltageI2cErrLabel(uint8_t e);
 void voltageCalibrateAll(ChannelRuntime *ch);
 VoltageSample voltageSample(int ch, const ChannelRuntime *rt);
