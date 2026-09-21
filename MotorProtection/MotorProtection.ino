@@ -36,6 +36,11 @@
 #include "ui.h"
 
 void setup() {
+  for (int i = 0; i < MAX_CHANNELS; i++) {
+    pinMode(PIN_RELAY[i], OUTPUT);
+    digitalWrite(PIN_RELAY[i], LOW);
+  }
+
   Serial.begin(115200);
   delay(200);
   Serial.println("MPS-505 boot...");
