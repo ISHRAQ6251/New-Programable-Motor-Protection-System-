@@ -134,7 +134,7 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <span class="help dc-only">0 disables. Must be greater than UV if both are set.</span>
       <label for="a-vch" class="dc-only">Voltage sense channel</label>
       <select id="a-vch" name="vch" class="dc-only"></select>
-      <span class="help dc-only">Auto uses the same ADS tap as current CH0. Pick 0–7 for a dedicated tap.</span>
+      <span class="help dc-only">Same as current uses the ADS tap on current CH0. Pick 0–7 for a dedicated tap.</span>
       <label for="a-stall">Stall current (A)</label>
       <input id="a-stall" name="stall" type="number" step="0.01" min="0.01" required>
       <label for="a-cool">Cooling time (s)</label>
@@ -184,7 +184,7 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <span class="help e-dc-only">0 disables. Must be greater than UV if both are set.</span>
       <label for="e-vch" class="e-dc-only">Voltage sense channel</label>
       <select id="e-vch" class="e-dc-only"></select>
-      <span class="help e-dc-only">Auto uses the same ADS tap as current CH0.</span>
+      <span class="help e-dc-only">Same as current uses the ADS tap on current CH0. Pick 0–7 for a dedicated tap.</span>
       <label for="e-stall">Stall current (A)</label>
       <input id="e-stall" type="number" step="0.01" min="0.01" required>
       <label for="e-cool">Cooling time (s)</label>
@@ -349,13 +349,14 @@ function setShown(nodes,on){
     if(lab&&lab.tagName==="LABEL") lab.hidden=!on;
   });
 }
-function chOpts(sel,n,picked,keep){
+function chOpts(sel,n,picked,keep,extra){
   const used=new Set();
   (DATA.motors||[]).forEach(m=>{
     if(!m.used) return;
     if(keep!=null&&m.idx===keep) return;
     (m.channels||[]).forEach(c=>used.add(+c));
   });
+  (extra||[]).forEach(c=>{if(c>=0&&c<8&&+c!==+picked) used.add(+c);});
   const cur=sel.value;
   sel.innerHTML="<option value='-1'>Auto (lowest free)</option>"+
     [0,1,2,3,4,5,6,7].map(c=>{
@@ -363,13 +364,15 @@ function chOpts(sel,n,picked,keep){
       return "<option value='"+c+"'"+(taken?" disabled":"")+">CH "+c+(taken?" (in use)":"")+"</option>";
     }).join("");
   if(picked>=0&&picked<8) sel.value=String(picked);
-  else if(cur!==""&&sel.querySelector("option[value='"+cur+"']")) sel.value=cur;
+  else if(cur!==""&&sel.querySelector("option[value='"+cur+"']")&&!sel.querySelector("option[value='"+cur+"']").disabled) sel.value=cur;
   else sel.value="-1";
 }
 function vchOpts(sel,picked){
-  sel.innerHTML="<option value='-1'>Auto (same as CH0)</option>"+
+  const cur=sel.value;
+  sel.innerHTML="<option value='-1'>Same as current</option>"+
     [0,1,2,3,4,5,6,7].map(c=>"<option value='"+c+"'>CH "+c+"</option>").join("");
   if(picked>=0&&picked<8) sel.value=String(picked);
+  else if(cur!==""&&sel.querySelector("option[value='"+cur+"']")) sel.value=cur;
   else sel.value="-1";
 }
 function syncPhases(which){
@@ -395,9 +398,10 @@ function syncSupply(which){
 function refreshAlloc(){
   const n=+$("a-ph").value||1;
   syncPhases("a");
-  chOpts($("a-ch0"),n,-1,null);
-  chOpts($("a-ch1"),n,-1,null);
-  chOpts($("a-ch2"),n,-1,null);
+  const p0=+$("a-ch0").value,p1=+$("a-ch1").value,p2=+$("a-ch2").value;
+  chOpts($("a-ch0"),n,p0,null,n===3?[p1,p2]:[]);
+  chOpts($("a-ch1"),n,p1,null,[p0,p2]);
+  chOpts($("a-ch2"),n,p2,null,[p0,p1]);
   vchOpts($("a-vch"),-1);
   const a0=$("a-ch0").value,a1=$("a-ch1").value,a2=$("a-ch2").value;
   const manual=a0!=="-1"||(n===3&&(a1!=="-1"||a2!=="-1"));
@@ -417,6 +421,19 @@ $("a-ch1").onchange=refreshAlloc;
 $("a-ch2").onchange=refreshAlloc;
 $("a-ac").onchange=()=>syncSupply("a");
 $("e-ac").onchange=()=>syncSupply("e");
+function refreshEditCh(){
+  const i=+$("e-pick").value;
+  const m=DATA.motors.find(x=>x.idx===i);
+  if(!m) return;
+  const keep=m.idx;
+  const p0=+$("e-ch0").value,p1=+$("e-ch1").value,p2=+$("e-ch2").value;
+  chOpts($("e-ch0"),m.phases,p0,keep,m.phases===3?[p1,p2]:[]);
+  chOpts($("e-ch1"),m.phases,p1,keep,[p0,p2]);
+  chOpts($("e-ch2"),m.phases,p2,keep,[p0,p1]);
+}
+$("e-ch0").onchange=refreshEditCh;
+$("e-ch1").onchange=refreshEditCh;
+$("e-ch2").onchange=refreshEditCh;
 $("f-add").onsubmit=ev=>{
   ev.preventDefault();
   const n=+$("a-n").value;
@@ -457,9 +474,12 @@ function fillEditForm(){
   $("f-edit").hidden=false;
   $("e-ch").textContent="CH "+(m.channels||[]).join(", ")+"  ("+m.phases+"-phase)";
   const keep=m.idx;
-  chOpts($("e-ch0"),m.phases,(m.channels&&m.channels[0]!=null)?m.channels[0]:-1,keep);
-  chOpts($("e-ch1"),m.phases,(m.channels&&m.channels[1]!=null)?m.channels[1]:-1,keep);
-  chOpts($("e-ch2"),m.phases,(m.channels&&m.channels[2]!=null)?m.channels[2]:-1,keep);
+  const e0=(m.channels&&m.channels[0]!=null)?+m.channels[0]:-1;
+  const e1=(m.channels&&m.channels[1]!=null)?+m.channels[1]:-1;
+  const e2=(m.channels&&m.channels[2]!=null)?+m.channels[2]:-1;
+  chOpts($("e-ch0"),m.phases,e0,keep,m.phases===3?[e1,e2]:[]);
+  chOpts($("e-ch1"),m.phases,e1,keep,[e0,e2]);
+  chOpts($("e-ch2"),m.phases,e2,keep,[e0,e1]);
   vchOpts($("e-vch"),(typeof m.vch==="number"&&m.vch<8)?m.vch:-1);
   syncPhases("e");
   $("e-name").value=m.name;$("e-in").value=m.in;$("e-ac").value=m.ac?1:0;

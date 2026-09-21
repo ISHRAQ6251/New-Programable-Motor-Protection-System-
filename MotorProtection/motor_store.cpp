@@ -119,7 +119,7 @@ static bool validateStructural(const MotorRecord *m, char *err, size_t err_len) 
     }
   }
   if (m->voltage_channel != VCH_SAME && m->voltage_channel >= MAX_CHANNELS) {
-    snprintf(err, err_len, "voltage channel must be 0-7 or Auto");
+    snprintf(err, err_len, "voltage channel must be 0-7 or same as current");
     return false;
   }
   if (m->step_count < 1 || m->step_count > MAX_STEPS) {
@@ -336,24 +336,15 @@ static bool allocLocked(uint8_t phase_count, uint8_t *out_ch) {
 }
 
 static bool takeChannelsLocked(MotorRecord *rec, int skip_idx, char *err, size_t err_len) {
-  bool any = false;
-  for (int p = 0; p < rec->phase_count; p++) {
-    if (rec->channels[p] != CH_UNUSED) {
-      any = true;
-      break;
-    }
-  }
-  if (!any) {
-    uint8_t ch[MAX_PHASES];
-    if (!allocLocked(rec->phase_count, ch)) {
-      snprintf(err, err_len, "not enough free channels");
-      return false;
-    }
-    memcpy(rec->channels, ch, sizeof(ch));
-    return true;
+  uint8_t claimed[MAX_PHASES];
+  for (int p = 0; p < MAX_PHASES; p++) {
+    claimed[p] = CH_UNUSED;
   }
   for (int p = 0; p < rec->phase_count; p++) {
     const uint8_t c = rec->channels[p];
+    if (c == CH_UNUSED) {
+      continue;
+    }
     if (c >= MAX_CHANNELS) {
       snprintf(err, err_len, "channel %d required", p);
       return false;
@@ -363,15 +354,41 @@ static bool takeChannelsLocked(MotorRecord *rec, int skip_idx, char *err, size_t
       return false;
     }
     for (int q = 0; q < p; q++) {
-      if (rec->channels[q] == c) {
+      if (claimed[q] == c) {
         snprintf(err, err_len, "duplicate channel %u", (unsigned)c);
         return false;
       }
     }
+    claimed[p] = c;
   }
-  for (int p = rec->phase_count; p < MAX_PHASES; p++) {
-    rec->channels[p] = CH_UNUSED;
+  for (int p = 0; p < rec->phase_count; p++) {
+    if (claimed[p] != CH_UNUSED) {
+      continue;
+    }
+    int found = -1;
+    for (int c = 0; c < MAX_CHANNELS; c++) {
+      if (channelTaken((uint8_t)c, skip_idx)) {
+        continue;
+      }
+      bool dup = false;
+      for (int q = 0; q < rec->phase_count; q++) {
+        if (claimed[q] == (uint8_t)c) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) {
+        found = c;
+        break;
+      }
+    }
+    if (found < 0) {
+      snprintf(err, err_len, "not enough free channels");
+      return false;
+    }
+    claimed[p] = (uint8_t)found;
   }
+  memcpy(rec->channels, claimed, sizeof(claimed));
   return true;
 }
 

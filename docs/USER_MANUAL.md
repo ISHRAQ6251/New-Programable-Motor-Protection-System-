@@ -9,7 +9,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 ## 1. What the system does
 
 - Up to **8 protection channels**. Each channel is one ACS712-30A current sensor, one relay, and one DC voltage tap (ADS1115).
-- A **single-phase** motor uses 1 channel. A **three-phase** motor uses 3 linked channels: a fault on any phase opens all three relays, and the dashboard shows one row, not three.
+- A **single-phase** motor uses 1 channel. A **three-phase** motor uses 3 linked channels: a fault on any phase opens all three relays, and the dashboard shows one row, not three. Add/Edit can pin those channels (or leave Auto) and, for DC, pick a **voltage sense channel**.
 - Classic **I²t energy** trip curve, plus a faster independent **stall** trip, optional **stall recovery** (jam release), and a **sensor-fault** trip.
 - Motor settings live in on-chip flash (NVS). They survive power cycles even if the SD card is missing.
 - The SD card is used **only** for a persistent fault-history CSV. Missing card: protection and dashboard still run; the Log page shows the last 32 trips from RAM with a “RAM buffer only — logs lost on reboot” banner.
@@ -179,9 +179,11 @@ V_bus (V) = (V_adc - v_zero) × 16
 
 There is **no AC voltage sensor**. For AC motors, enter a static **Rated AC voltage** on Add/Edit. It is stored in NVS and shown as configuration, not as live telemetry, and is not used for trips.
 
+For DC motors, Add/Edit **Voltage sense channel** selects which ADS tap feeds live V and UV/OV. **Same as current** (default) uses the tap on current CH0. Pin CH0–CH7 for a dedicated tap (voltage taps may be shared across motors; current channels may not). Wire that tap to the motor terminal **downstream of the relay** that feeds the load.
+
 ### 2.7 Three-phase motors
 
-Wire phases A, B, C to three consecutive free channels (the firmware allocates the lowest free indices, e.g. CH0/CH1/CH2). The motor supply for all three phases should pass through the three relays so that a trip on any phase de-energizes the whole motor.
+Wire phases A, B, C to three free channels. On Add/Edit pick those channels (or leave Auto for the lowest free indices, e.g. CH0/CH1/CH2). The motor supply for all three phases should pass through the three relays so that a trip on any phase de-energizes the whole motor. For DC, the voltage tap can follow current CH0 or a dedicated **Voltage sense channel**.
 
 ---
 
@@ -312,12 +314,13 @@ Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silen
 
 ### 5.2 Add a motor
 
-1. Choose **1** or **3** phases. The UI shows which channels will be allocated (lowest free indices). If not enough channels are free, add is rejected.
+1. Choose **1** or **3** phases. Then pick current channels: **Auto (lowest free)** or pin **CH0–CH7**. 1-phase shows one dropdown; 3-phase shows three. Channels already used by another motor are disabled. If not enough channels are free, add is rejected.
 2. **Name** — letters, digits, space, `_ - .` only.
 3. **Operating current In (A)** — the motor's rated current. Trip steps are multiples of this.
 4. **Supply** — AC or DC.
    - AC: pick **50 Hz** or **60 Hz** (RMS window) and **Rated AC voltage** (nameplate only; not sensed, not a trip).
    - DC: optional **Undervoltage** and **Overvoltage** in volts. **0 disables** that trip. If both are set, OV must be greater than UV. Live V is the terminal downstream of the relay.
+   - DC **Voltage sense channel**: **Same as current** (default — ADS tap on current CH0) or pin **CH0–CH7** for a dedicated voltage tap. Voltage taps may be shared; current channels may not.
 5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window, unless stall recovery is enabled. Must exceed In and every I²t step current.
 6. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
 7. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off). On still latches Fault after 3 consecutive trips; a 10-minute trip-free run, Start, or Reset clears the counter.
@@ -360,7 +363,7 @@ The dashboard shows `JAM (n/3)` next to status while a sequence is active. The l
 
 ### 5.3 Start, stop, reset, calibrate
 
-- **Start** — only from Stopped, and only after zero calibration (done automatically at boot). DC Start also needs the ADS1115 for that motor's channels.
+- **Start** — only from Stopped, and only after zero calibration (done automatically at boot). DC Start also needs the ADS1115 for that motor's voltage sense channel (dedicated `vch`, or every current channel when Same as current).
 - **Stop** — opens the relay(s), zeros thermal energy, power, session energy, and live readings.
 - **Reset** — from Fault or Cooling, same as Stop plus silence buzzer.
 - **Calibrate zeros** — re-probes I²C for the two ADS1115 chips, then re-measures current ADC zeros and DC voltage zeros on all 8 channels. Allowed only when every motor is Stopped or Fault. Relays stay off so voltage taps sit at 0 V. A wiring fix to an ADDR pin is picked up here without a reboot.
@@ -538,12 +541,15 @@ If every phase of a Running motor stays below **0.05 × In** for **2 s**, trip `
 
 ### 7.5 DC undervoltage / overvoltage
 
-After 250 ms of Running (so the relay has closed and the tap is live):
+After **750 ms** of Running (so the relay has closed and the tap is live):
 
-- If UV > 0 and `V_bus < UV` → trip `UNDERVOLT`
-- If OV > 0 and `V_bus > OV` → trip `OVERVOLT`
+- Each ADS reading is the average of **4** conversions, then a 0.9/0.1 low-pass on `Vbus`
+- If UV > 0 and filtered `V_bus < UV` → trip `UNDERVOLT`
+- If OV > 0 and filtered `V_bus > OV` → trip `OVERVOLT`
 
-0 disables that trip. AC rated voltage is never compared.
+0 disables that trip. AC rated voltage is never compared. Serial prints `VOLT: ch=… adc=… zero=… bus=…` every 2 s while Running.
+
+The voltage tap used for UV/OV is the motor's **Voltage sense channel** (Same as current CH0, or a dedicated CH0–CH7). Wire that ADS input to the motor terminal downstream of the relay that actually feeds the load.
 
 ### 7.6 Power display and its limits
 
@@ -594,7 +600,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | ADC | 12-bit, 11 dB attenuation, ADC1 only (current) |
 | RMS samples | ≥ 32 over ≥ 1 AC cycle |
 | Sensor |I| cap | 40 A |
-| UV/OV grace | 250 ms after DC Start |
+| UV/OV grace | 750 ms after DC Start |
 | No-current trip | Running and max phase `< 0.05 × In` for 2 s |
 | Auto-restart cap | 3 consecutive trips, then Fault; 10 min clean run clears |
 | Stall recovery | 3 pulses, 300 ms off / 500 ms wait, 500 ms min run; default off |
@@ -602,7 +608,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Fault log | SD `/faults.csv` when present; else 32-entry RAM ring (`ram_only`) |
 | Power | DC `W` (true); AC `VA` (apparent at rated V); PF unknown |
 | Session energy | RAM only, `Wh`/`VAh`, resets on Start and reboot |
-| NVS namespace | `mps` (motors blob, auth_user, auth_pass), schema 3 |
+| NVS namespace | `mps` (motors blob, auth_user, auth_pass), schema 4 |
 
 ---
 
@@ -629,7 +635,9 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Live DC V reads ~19 % high vs a meter | Firmware still using the old 180 k / 10 k scale | Flash this tree (150 k / 10 k, scale 16) and recalibrate zeros |
 | Edit rejected "stall current must exceed In…" | Stall ≤ In or ≤ a protection-step current | Raise stall above In and every `k × In` |
 | Motor trips `NO_CURRENT` at Start | Sense wire open, ACS712 unpowered, or relay never closed | Check ACS712 5 V, sense wiring, and that the relay actually closes |
-| Motors vanished after this flash | NVS schema 3 vs v1/v2 blob | Expected. Re-enter motors. Auth credentials are unchanged |
+| Motors vanished after this flash | NVS schema 4 vs older blob | Expected. Re-enter motors. Auth credentials are unchanged |
+| False UNDERVOLT / OVERVOLT while running | Noise on the ADS tap, or UV/OV set too close to the running voltage | Leave UV/OV at 0 until the Serial `VOLT:` line is stable. Firmware averages 4 samples and LPF-filters `Vbus`; grace is 750 ms after Start |
+| Wrong live V / UV/OV on a DC motor | Voltage sense channel is not the tap on that motor | On Add/Edit set **Voltage sense channel** to the ADS channel wired downstream of that motor's relay, or Same as current |
 
 ---
 

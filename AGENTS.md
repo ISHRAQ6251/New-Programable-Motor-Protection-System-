@@ -9,7 +9,8 @@ University firmware project: replace a bimetallic thermal overload relay with an
 - Up to 8 channels = 8 ACS712-30A sensors + 8 relays + 8 DC voltage taps (2× ADS1115)
 - 1-phase motor = 1 channel; 3-phase motor = 3 linked channels, one dashboard row
 - Classic I²t energy model, independent stall trip, optional stall recovery (jam release), sensor-fault trip, `NO_CURRENT`
-- Live DC voltage (ADS1115) with optional UV/OV trip; AC rated voltage is a manual NVS field only
+- Live DC voltage (ADS1115) with optional UV/OV trip (4-sample average + LPF, 750 ms grace); AC rated voltage is a manual NVS field only
+- User-selectable current channels (Auto or CH0–CH7) and per-motor DC voltage sense channel (`VCH_SAME` or 0–7)
 - Power: DC true `W`; AC apparent `VA` at rated V; energy RAM-only
 - Desktop web dashboard on a fixed SoftAP (`MPS-505` / `mps50005`)
 - Local panel: SH1106 128x64 OLED on the shared ADS1115 I2C bus (`Wire` GPIO 14/42) + KY-040 encoder (rotate / short / long press) + onboard WS2812 status LED (GPIO 48), with buzzer feedback
@@ -153,7 +154,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - RMS sample count = 32 minimum
 - Sensor-fault |I| cap = 40 A
 - ADC attenuation = 11 dB
-- Channel allocation = lowest free indices
+- Channel allocation = Auto (lowest free) or pinned `ch0`/`ch1`/`ch2` 0–7 from the dashboard
 - Thermal % = `100 * E / E_trip` of the active step
 - Motor API add endpoint is `/api/motor/add` (never `/api/motor`, which prefixes `/edit` and `/del`)
 - Task WDT 5 s on the protection task; NO_CURRENT after 2 s below 0.05×In; auto-restart cap 3, reset after 10 min clean run; `dt` cap 5 s
@@ -161,8 +162,9 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Power/energy are RAM only in `MotorRuntime`; no NVS write. Energy resets on Start and reboot
 - Jam release: `JAM_RELEASE_MAX = 3`, `JAM_RELEASE_OFF_MS = 300`, `JAM_RELEASE_WAIT_MS = 500`, `JAM_RELEASE_MIN_RUN_MS = 500`; no user-configurable timing; default `stall_recovery = 0`
 - AC power is apparent `VA` at rated V; power factor is not measurable and must never be shown as `W`
-- I²C SDA/SCL = GPIO 14 / 42; ADS1115 data rate 250 SPS; UV/OV grace 250 ms after DC Start
-- NVS schema 3; flashing this build drops a v1/v2 motor blob (size/schema mismatch → empty list)
+- I²C SDA/SCL = GPIO 14 / 42; ADS1115 data rate 250 SPS; UV/OV grace 750 ms after DC Start; 4-sample ADS average then 0.9/0.1 LPF on `Vbus`
+- NVS schema 4; flashing this build drops a v1/v2/v3 motor blob (size/schema mismatch → empty list)
+- DC `voltage_channel` is 0–7 or `VCH_SAME` (0xFF = same ADS tap as current CH0); AC forces `VCH_SAME`
 - Buzzer frequencies as named functions in the design spec (1 kHz fault, short chirps)
 - Live status poll interval ≈ 1 s
 - Security page exists to change dashboard login credentials (invalidates session)
@@ -209,6 +211,9 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Clear Logs now clears both SD and RAM ring; if either succeeds, the button returns ok.
 - OLED rebuilds motor order every UI refresh (160 ms); motor add/edit/delete from web dashboard appears on panel without reboot.
 - Web log page serves RAM ring with ram_only:true when SD is missing; JavaScript shows warning banner. Clear stays available; Export stays SD-only.
+- DC voltage noise: ADS average is `V_AVG_SAMPLES` (4) in `voltageSample()`, then 0.9/0.1 LPF on `Vbus` (`ChannelRuntime.v_filt`). UV/OV uses the filtered value after `UV_GRACE_MS` (750). Serial `VOLT: ch=… adc=… zero=… bus=…` every 2 s while Running. Do not trip on a single raw ADS sample.
+- Relay GPIOs are forced OUTPUT LOW at the very top of `setup()`, before `Serial.begin()`. `relaysBegin()` repeats the fail-safe.
+- Add/Edit channel dropdowns (`ch0`/`ch1`/`ch2`, -1 = Auto) and DC `vch` (`VCH_SAME` or 0–7) are stored in the NVS motor blob (schema 4). Used current channels are disabled in the other dropdowns; voltage taps may be shared.
 
 ## Next planned steps
 
@@ -229,5 +234,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - 2026-09-21 — Boot crash `xQueueSemaphoreTake` on NULL mutex: `uiBegin()` started `uiTask` before `protectionBegin()` created `s_mu`. Mutex/queue create now runs at the top of `setup()`; `init: …` Serial lines between each begin.
 - 2026-09-21 — Optional per-motor stall recovery (jam release): 3× 300/500 ms pulses after 500 ms of Running; I²t and SENSOR stay live; stall / UV / OV / NO_CURRENT skipped while `jam_phase != IDLE`. 32-entry RAM fault ring feeds the web log when SD is missing (`ram_only`). NVS schema 3.
 - 2026-09-21 — Clear Logs clears SD and RAM ring (`protectionClearLog`); OLED rebuilds motor order every 160 ms refresh; web log already served RAM with `ram_only` when SD missing.
+- 2026-09-21 — DC voltage filter against false UV/OV: 4-sample ADS average, 0.9/0.1 LPF, `UV_GRACE_MS` 750, `VOLT:` Serial. Relays OUTPUT LOW at the top of `setup()` before Serial.
+- 2026-09-22 — User-selectable current channels (`ch0`–`ch2`, Auto = lowest free) and per-motor DC voltage sense channel (`vch` / `voltage_channel`, `VCH_SAME` = same as current CH0). NVS schema 4.
 
 Last firmware: I²C `i2cInitOnce` / `voltageReprobe` / no `Wire.end()` (origin `455debf` and follow-up quality), on top of Calibrate re-probe (`2f53bc7`), divider 150 kΩ / 10 kΩ (`b5e3754`), and safety review (`912a982`).

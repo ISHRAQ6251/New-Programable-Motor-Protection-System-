@@ -16,7 +16,8 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - Independent **stall** trip on the next RMS window; optional per-motor **stall recovery** (jam release: 3 short power pulses)
 - **Sensor-fault** trip (stuck ADC, out-of-range Vadc, |I| > 40 A, or missing ADS1115 on a DC channel)
 - **No-current** trip after 2 s Running below 5 % of In (broken sense wire / open winding)
-- Live **DC voltage** with optional undervoltage / overvoltage trip (0 = that trip disabled; 250 ms grace after Start)
+- Live **DC voltage** with optional undervoltage / overvoltage trip (0 = that trip disabled; 750 ms grace after Start; 4-sample average + 0.9/0.1 LPF)
+- **User-selectable current channels** on Add/Edit (Auto or pin CH0–CH7); DC motors also pick a **voltage sense channel** (same as current, or a dedicated ADS tap)
 - **Rated AC voltage** is a manual nameplate field (not sensed, not used for trips)
 - **Power** display and fault-log columns: true `W` for DC (`V × I`), apparent `VA` at rated V for AC (PF unknown, never shown as `W`)
 - Desktop dashboard on SoftAP `MPS-505` / `mps50005`
@@ -77,7 +78,7 @@ Sensor fault → trip **SENSOR_FAULT** immediately. Auto-restart still applies.
 
 Running and max phase current `< 0.05 × In` for 2 s → trip **NO_CURRENT**.
 
-DC only, after 250 ms of Running: live V below UV (if UV > 0) → **UNDERVOLT**; above OV (if OV > 0) → **OVERVOLT**. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared.
+DC only, after 750 ms of Running: 4-sample ADS average then 0.9/0.1 LPF on `Vbus`; live V below UV (if UV > 0) → **UNDERVOLT**; above OV (if OV > 0) → **OVERVOLT**. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared. Serial `VOLT:` every 2 s while Running.
 
 On trip: de-energize that motor's relay(s), sound the fault tone, append an SD log line if a card is mounted (and always the 32-entry RAM ring), enter **Cooling**. After cooling: auto-restart if enabled and consecutive trips are under 3, else **Fault**. A 10-minute trip-free run (or Start/Reset) clears the restart counter. Jam-release attempts are a separate counter. Reset from the UI returns Fault/Cooling to Stopped and silences the buzzer.
 
@@ -155,7 +156,7 @@ LICENSE                   MIT
 | Channels / motors / steps | 8 / 8 / 8 |
 | RMS samples | ≥ 32 over ≥ 1 AC cycle |
 | Sensor \|I\| cap | 40 A |
-| UV/OV grace | 250 ms after DC Start |
+| UV/OV grace | 750 ms after DC Start |
 | No-current trip | 2 s below 0.05 × In while Running |
 | Auto-restart cap | 3 consecutive trips; 10 min clean run clears |
 | Stall recovery attempts | 3 (fixed) |
@@ -166,7 +167,7 @@ LICENSE                   MIT
 | Fault log | SD (persistent) + RAM (32 entries when SD absent) |
 | Power | DC true `W`; AC apparent `VA` at rated V (power factor unknown) |
 | Session energy | RAM only (`Wh`/`VAh`), resets on Start and reboot |
-| NVS schema | 3 (v1/v2 motor blob is discarded on first boot of this build) |
+| NVS schema | 4 (older motor blobs are discarded on first boot of this build) |
 | Timestamps | `millis()` uptime (no NTP on SoftAP) |
 
 ## Safety
@@ -182,7 +183,9 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - Safety: 5 s Task WDT, `NO_CURRENT`, 3-restart cap, per-motor sample-then-trip, `dt` cap 5 s
 - Web: `/login` + cookie (not HTTP Basic); add endpoint `/api/motor/add`
 - I²C: `i2cInitOnce()` once; never `Wire.end()`; Calibrate calls `voltageReprobe()`
-- NVS schema 3 (jam-release field; older motor blobs discarded)
+- NVS schema 4 (`voltage_channel`; v1/v2/v3 motor blobs discarded)
+- DC voltage filter: 4-sample ADS average, 0.9/0.1 LPF, 750 ms UV/OV grace, `VOLT:` Serial
+- User-selectable current channels (`ch0`–`ch2`) and DC voltage sense channel (`vch`) on Add/Edit
 - Local panel: SH1106 128x64 on `Wire1` (GPIO 25/47) + KY-040 encoder on 22/23/24; shared `protectionCanStart()` gate; `toneBack()`; U8g2 (2026-09-20)
 - 2026-09-21 pin/bus correction: encoder 47/48/46; OLED shares ADS1115 `Wire` 14/42; `s_i2c_mu` serializes every Wire transaction; GPIO 22–25 are not physical pins
 - 2026-09-21 encoder off GPIO 48: CLK 47 / DT 46 / SW 19; NeoPixel status LED on GPIO 48; 3-frame status icons

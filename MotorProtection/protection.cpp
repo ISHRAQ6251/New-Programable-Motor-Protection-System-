@@ -552,14 +552,18 @@ static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
     s_volt_log_ms[mi] = now;
     const uint8_t vc = voltageChOf(&s_motors[mi]);
     float raw = 0;
+    float adc = 0;
     if (dedicated_v) {
       raw = job->vsense.v_bus;
+      adc = job->vsense.v_adc;
     } else if (job->vres[0].present) {
       raw = job->vres[0].v_bus;
+      adc = job->vres[0].v_adc;
     }
+    const float zero = (vc < MAX_CHANNELS) ? s_ch[vc].v_zero : 0;
     const float filt = (vc < MAX_CHANNELS) ? s_ch[vc].last_v : 0;
-    Serial.printf("VOLT: motor=%s ch=%u raw=%.2f filt=%.2f uv=%.1f ov=%.1f\n",
-                  s_motors[mi].name, (unsigned)vc, (double)raw, (double)filt,
+    Serial.printf("VOLT: ch=%u adc=%.3f zero=%.3f bus=%.3f filt=%.2f uv=%.1f ov=%.1f\n",
+                  (unsigned)vc, (double)adc, (double)zero, (double)raw, (double)filt,
                   (double)s_motors[mi].uv_volts, (double)s_motors[mi].ov_volts);
   }
 }
