@@ -45,10 +45,11 @@ Do not use these GPIOs for sensors or relays:
 |---|---|
 | 22–25 | Do not exist on this chip at all (not physical pins) |
 | 26–37 | Reserved for flash / octal PSRAM on this N16R8 module |
-| 0, 3, 45 | Strapping pins (boot-mode / flash / JTAG) — fully off-limits |
-| 46 | Input-only strapping pin (ROM extra boot-log text only, unrelated to boot/flash/JTAG). Used here as ENC_B (DT) only. Distinct from 0/3/45. |
-| 20 | Native USB D+ on silicon; unused on this board (programming/Serial go through the UART bridge) |
-| 43, 44 | UART0 Serial monitor — do not reassign |
+| 0, 45 | Strapping pins (boot-mode / flash voltage) — fully off-limits |
+| 3 | Strapping pin (JTAG source). Used here as ENC_SW; KY-040 pull-up holds HIGH at boot. Safe as input after boot. |
+| 46 | Input-only strapping pin (ROM extra boot-log text only, unrelated to boot/flash/JTAG). Used here as ENC_B (DT) only. Distinct from 0/45. |
+| 19, 20 | Native USB D-/D+. This board uses native USB for serial (NOT a UART bridge). Never assign as GPIO — doing so crashes the board and breaks serial. |
+| 43, 44 | UART0 Serial — do not reassign |
 
 Current-sense pins are all **ADC1**. ADC2 is unreliable while Wi-Fi is on.
 
@@ -60,7 +61,7 @@ All GPIO numbers exist only in `MotorProtection/config_pins.h`. Changing a pin m
 |---|---|---|---|
 | I-sense CH0 | 1 | Analog in (ADC1) | ACS712 via divider |
 | I-sense CH1 | 2 | Analog in (ADC1) | |
-| I-sense CH2 | 4 | Analog in (ADC1) | GPIO 3 skipped (strapping) |
+| I-sense CH2 | 4 | Analog in (ADC1) | GPIO 3 is ENC_SW |
 | I-sense CH3 | 5 | Analog in (ADC1) | |
 | I-sense CH4 | 6 | Analog in (ADC1) | |
 | I-sense CH5 | 7 | Analog in (ADC1) | |
@@ -83,7 +84,7 @@ All GPIO numbers exist only in `MotorProtection/config_pins.h`. Changing a pin m
 | I²C SCL | 42 | I²C | Shared ADS1115 + SH1106 — not ESP32 default GPIO 9 |
 | Encoder CLK | 47 | Digital in | KY-040 A, plain `INPUT` (module pull-up) |
 | Encoder DT | 46 | Digital in | KY-040 B. GPIO 46 is input-only/strapping; encoder line only. |
-| Encoder SW | 19 | Digital in | KY-040 switch, active-LOW. Native USB unused on this board; programming/Serial go through UART 43/44. |
+| Encoder SW | 3 | Digital in | KY-040 switch, active-LOW. Strapping-safe with module pull-up. GPIO 19 is USB D- and must never be used as GPIO. |
 | Status LED | 48 | One-wire | Onboard WS2812. Not I²C — never take `s_i2c_mu`. |
 | UART0 Serial | 43, 44 | reserved | Do not reassign |
 
@@ -396,7 +397,7 @@ No card: the Log page shows the RAM ring and a yellow/amber banner **RAM buffer 
 
 ### 5.6 Local panel (SH1106 OLED + KY-040 encoder + WS2812)
 
-The panel gives at-a-glance status and Start/Stop without a laptop. It is optional: if the OLED is missing the firmware keeps running and the web dashboard still works. Encoder is CLK 47 / DT 46 / SW 19. GPIO 48 is the onboard WS2812 status LED (one-wire, not I²C).
+The panel gives at-a-glance status and Start/Stop without a laptop. It is optional: if the OLED is missing the firmware keeps running and the web dashboard still works. Encoder is CLK 47 / DT 46 / SW 3. GPIO 48 is the onboard WS2812 status LED (one-wire, not I²C).
 
 Controls:
 
@@ -620,7 +621,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 always 0x48, CH4–7 always 0x49. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
 | `I2C: diag ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / SDA-SCL swap / missing pull-ups |
 | OLED blank / no local panel | U8g2 not installed, wrong address, or bus contention | Confirm 0x3C on the shared Wire bus (GPIO 14/42). Constructor is `U8G2_SH1106_128X64_NONAME_F_HW_I2C` |
-| Encoder direction reversed | CLK/DT swapped for your module | Swap the CLK and DT wires (CLK 47 / DT 46 / SW 19). Bounce is already absorbed by the state-table decoder |
+| Encoder direction reversed | CLK/DT swapped for your module | Swap the CLK and DT wires (CLK 47 / DT 46 / SW 3). Bounce is already absorbed by the state-table decoder |
 | Status LED dark or wrong colour | Adafruit NeoPixel not installed, or GPIO 48 used as encoder DT | Install NeoPixel. GPIO 48 is the WS2812 only — encoder DT is GPIO 46 |
 | Panel shows `DC start needs the ADS1115…` | Same DC-readiness gate as the dashboard | Populate/repair the ADS1115, then press Calibrate |
 | Login page rejects mps / mps500 after a flash that printed `dash pass: mps50005` | NVS `auth_pass` was the AP password | This build restores `mps500` when `auth_pass` equals the AP password |

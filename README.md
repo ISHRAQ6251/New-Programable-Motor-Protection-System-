@@ -42,7 +42,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 
 Zero-current and DC zero-voltage are **calibrated** at boot (relays open → 0 V at each voltage tap). Do not assume 1.5 V or 0.000 V.
 
-GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits. GPIO 46 is input-only/strapping and is ENC_B (DT). GPIO 19 is ENC_SW (native USB unused; programming/Serial go through UART 43/44). GPIO 48 is the onboard WS2812. Current-sense pins are ADC1 only. **Do not use ESP32 default I²C GPIO 8/9** — those are current-sense CH6/CH7.
+GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/45 remain fully off-limits. GPIO 3 is ENC_SW (strapping-safe with the KY-040 pull-up). GPIO 46 is input-only/strapping and is ENC_B (DT). GPIO 19/20 are native USB D-/D+ — never use as GPIO (USB CDC is the serial path). GPIO 48 is the onboard WS2812. Current-sense pins are ADC1 only. **Do not use ESP32 default I²C GPIO 8/9** — those are current-sense CH6/CH7.
 
 ### Pin map
 
@@ -55,7 +55,7 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 |
 | Buzzer | 21 |
 | I²C SDA / SCL | **14 / 42** (shared ADS1115 + SH1106) |
-| Encoder CLK / DT / SW | 47 / 46 / 19 |
+| Encoder CLK / DT / SW | 47 / 46 / 3 |
 | Status LED | 48 (onboard WS2812) |
 
 ## Protection logic (short)
@@ -186,6 +186,7 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - Local panel: SH1106 128x64 on `Wire1` (GPIO 25/47) + KY-040 encoder on 22/23/24; shared `protectionCanStart()` gate; `toneBack()`; U8g2 (2026-09-20)
 - 2026-09-21 pin/bus correction: encoder 47/48/46; OLED shares ADS1115 `Wire` 14/42; `s_i2c_mu` serializes every Wire transaction; GPIO 22–25 are not physical pins
 - 2026-09-21 encoder off GPIO 48: CLK 47 / DT 46 / SW 19; NeoPixel status LED on GPIO 48; 3-frame status icons
+- 2026-09-21 ENC_SW off GPIO 19 (USB D-) to GPIO 3; early `MPS-505 boot...` Serial print
 - 2026-09-21 stall recovery (3× 300/500 ms jam-release pulses) and 32-entry RAM fault ring (`ram_only` log page)
 
 ## License

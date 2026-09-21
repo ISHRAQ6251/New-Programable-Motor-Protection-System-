@@ -16,13 +16,14 @@ the command queue, and the same Start gate.
 |---|---|
 | Display | SH1106 128×64 I²C, default address **0x3C** |
 | Display bus | Shared ADS1115 I²C bus `Wire` — GPIO 14 SDA / 42 SCL |
-| Encoder | KY-040, GPIO 47 CLK / 46 DT / 19 SW |
+| Encoder | KY-040, GPIO 47 CLK / 46 DT / 3 SW |
 | Status LED | Onboard WS2812, GPIO 48, one-wire (never `s_i2c_mu`) |
 | Buzzer | existing LEDC buzzer on GPIO 21 |
 
 GPIO 22–25 do not exist on ESP32-S3. GPIO 46 is input-only/strapping (ROM extra
-boot-log text only) and is ENC_B (DT). GPIO 19 is ENC_SW because this board
-programs and talks Serial through the UART bridge (43/44), not native USB.
+boot-log text only) and is ENC_B (DT). GPIO 3 is ENC_SW (strapping-safe JTAG
+source; KY-040 pull-up holds HIGH at boot). GPIO 19/20 are native USB D-/D+
+and must never be used as GPIO — USB CDC is the serial path on this board.
 GPIO 48 is the onboard WS2812, not an encoder pin. The OLED shares the ADS1115
 bus; `s_i2c_mu` serializes every Wire transaction and is never held across
 `delay()` or drawing. The LED never takes that mutex.

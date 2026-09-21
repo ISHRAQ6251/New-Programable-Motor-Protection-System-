@@ -38,6 +38,8 @@
 void setup() {
   Serial.begin(115200);
   delay(200);
+  Serial.println("MPS-505 boot...");
+  Serial.flush();
 
   relaysBegin();
   buzzerBegin();

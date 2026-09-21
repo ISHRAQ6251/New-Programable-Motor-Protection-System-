@@ -7,7 +7,7 @@ that shipped on 2026-09-20 and its design lives in
 ## Local panel (built 2026-09-20)
 
 - SH1106 128×64 OLED on the shared ADS1115 I²C bus, `Wire` (GPIO 14 SDA / 42 SCL)
-- KY-040 encoder on GPIO 47 (CLK) / 46 (DT) / 19 (SW); onboard WS2812 on GPIO 48
+- KY-040 encoder on GPIO 47 (CLK) / 46 (DT) / 3 (SW); onboard WS2812 on GPIO 48
 - `uiTask` on core 0: boot splash, Home, Per-motor, Fault Log, Diagnostics,
   Firmware Info, Network Info
 - Start/Stop shares the web dashboard's exact gate via `protectionCanStart()`

@@ -27,7 +27,7 @@ License: MIT (`LICENSE`). Project overview: `README.md`. User-facing guide: `doc
 
 Board: **ESP32-S3-N16R8** (16 MB flash, 8 MB octal PSRAM). Arduino IDE: "ESP32S3 Dev Module", Flash 16 MB, PSRAM OPI.
 
-GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits (strapping / boot / JTAG). GPIO 46 is input-only/strapping (ROM extra boot-log text only) and is used here as ENC_B (DT). GPIO 43/44 are UART0 Serial and stay untouched. GPIO 19/20 are native USB on silicon; this board programs and talks Serial through the UART bridge, so GPIO 19 is ENC_SW and GPIO 20 is unused. GPIO 48 is the onboard WS2812 (not an encoder pin).
+GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/45 remain fully off-limits (boot mode / flash voltage). GPIO 3 is ENC_SW (strapping-safe with the KY-040 pull-up). GPIO 46 is input-only/strapping (ROM extra boot-log text only) and is used here as ENC_B (DT). GPIO 43/44 are UART0 Serial and stay untouched. GPIO 19/20 are native USB D-/D+. This board uses native USB for serial (NOT a UART bridge). GPIO 19 must never be assigned as a GPIO — doing so crashes the board and breaks serial. GPIO 48 is the onboard WS2812 (not an encoder pin).
 
 | Function | GPIO | Notes |
 |---|---|---|
@@ -36,7 +36,7 @@ GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 | SPI, 3.3 V breakout, not SDIO |
 | Buzzer | 21 | Passive, LEDC PWM |
 | I²C SDA / SCL | **14 / 42** | Shared ADS1115 + SH1106. `Wire.begin(14, 42)` once via `i2cInitOnce()` — **not** default 8/9. Serialized by `s_i2c_mu`. |
-| Encoder CLK / DT / SW | 47 / 46 / 19 | KY-040, plain `INPUT` (module has onboard pull-ups). GPIO 46 is ENC_B (DT) only. GPIO 19 is ENC_SW (native USB unused on this board). |
+| Encoder CLK / DT / SW | 47 / 46 / 3 | KY-040, plain `INPUT` (module has onboard pull-ups). GPIO 46 is ENC_B (DT) only. GPIO 3 is ENC_SW (strapping-safe with pull-up). GPIO 19 is USB D- and must never be used as GPIO. |
 | Status LED | 48 | Onboard WS2812, one-wire. Never take `s_i2c_mu`. |
 
 DC voltage: 2× ADS1115 over that I²C bus. **0x48** (ADDR→GND) = CH0–3 AIN0–3; **0x49** (ADDR→VDD) = CH4–7 AIN0–3. Gain `GAIN_ONE` (±4.096 V). Divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~3.13 V. Tap is each motor **terminal downstream of its relay**, not the shared bus.
@@ -99,7 +99,7 @@ Fail-safe: all relays OFF in `setup()` before Wi-Fi/tasks. Protection task feeds
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
 | Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`) |
-| Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire; KY-040 on 47/46/19; WS2812 on GPIO 48; 3-frame status icons; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
+| Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire; KY-040 on 47/46/3; WS2812 on GPIO 48; 3-frame status icons; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
 | Sketch entry | `MotorProtection.ino` | done |
 
 Boot Serial prints AP SSID/password/IP, dashboard login (`mps` / `mps500`, **not** AP pass), and free heap (`HEAP:`). Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected.
@@ -168,7 +168,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Security page exists to change dashboard login credentials (invalidates session)
 - Core assignment: Wi-Fi + UI on core 0, protection + loop on core 1
 - `MPS_TEST_HOOKS` compile flag is optional and not required for v1
-- Local panel: SH1106 (**not** SSD1306) on the shared ADS1115 bus `Wire` GPIO 14/42 via U8g2 `HW_I2C`; KY-040 on GPIO 47/46/19 with a state-table quadrature decoder (one step per detent) and 40 ms switch debounce, 600 ms long-press threshold; onboard WS2812 on GPIO 48 via Adafruit NeoPixel (one-wire, never `s_i2c_mu`)
+- Local panel: SH1106 (**not** SSD1306) on the shared ADS1115 bus `Wire` GPIO 14/42 via U8g2 `HW_I2C`; KY-040 on GPIO 47/46/3 with a state-table quadrature decoder (one step per detent) and 40 ms switch debounce, 600 ms long-press threshold; onboard WS2812 on GPIO 48 via Adafruit NeoPixel (one-wire, never `s_i2c_mu`)
 - `protectionCanStart()` is the single Start gate shared by the web API and the panel; `protectionCopyLog()` exposes a non-destructive 32-entry RAM trip ring (the SD `protectionPopLog()` queue keeps its single consumer in `loop()`); web log uses that ring when SD is missing (`ram_only`)
 - `buzzer.cpp` guards its sequencer with a mutex because `uiTask` (core 0) and `loop()` (core 1) both issue tones; panel Start/Stop success tone comes from protection, not the panel, so it is not doubled
 - Panel boot stages are published from `setup()` via `uiBootStage()` / `uiBootNote()`; the splash reveals them, then auto-advances to Home
@@ -201,8 +201,9 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Panel Start must call `protectionCanStart()`; do not re-implement the ADS/vcal check in `ui.cpp`.
 - Panel Start/Stop success tones come from protection (`TONE_STARTED` / `TONE_STOPPED`). Do not also call `toneMotorStarted()` / `toneMotorStopped()` from `uiTask`, or the beep doubles.
 - KY-040 pins are plain `INPUT`; the module has its own pull-ups. Adding internal pull-ups can fight them.
-- GPIO 48 is the onboard WS2812. Encoder is CLK 47 / DT 46 / SW 19. Do not drive GPIO 48 as encoder DT. The LED is one-wire — never take `s_i2c_mu` for it.
-- GPIO 19 is ENC_SW because this board programs and talks Serial through the UART bridge (43/44), not native USB. GPIO 43/44 stay untouched.
+- GPIO 48 is the onboard WS2812. Encoder is CLK 47 / DT 46 / SW 3. Do not drive GPIO 48 as encoder DT. The LED is one-wire — never take `s_i2c_mu` for it.
+- GPIO 19/20 are native USB D-/D+. This board uses native USB for serial (NOT a UART bridge). GPIO 19 must never be assigned as a GPIO — doing so crashes the board and breaks serial.
+- GPIO 19 is USB D-. Assigning it as encoder input crashed the board and broke serial. Moved ENC_SW to GPIO 3 (strapping-safe: JTAG source, does not affect boot mode or flash voltage; KY-040 pull-up holds it HIGH at boot).
 - `uiTask` is not on the Task WDT; only the protection task is.
 - Clear Logs now clears both SD and RAM ring; if either succeeds, the button returns ok.
 - OLED rebuilds motor order every UI refresh (160 ms); motor add/edit/delete from web dashboard appears on panel without reboot.
@@ -216,13 +217,14 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 4. DC: apply voltage downstream of a closed relay; confirm live V and UV/OV trips (0 = disabled)
 5. Confirm missing-SD path (log page banner) and present-SD CSV write
 6. Power: DC known load vs bench meter; AC hand-check `V_rated × I_rms`; 3-phase current-unbalance check; trip CSV carries `power_W` / `power_VA`; energy reads `0.00` after reboot
-7. Local panel: confirm SH1106 at 0x3C on `Wire` (14/42 pins), encoder detents/tones (CLK 47 / DT 46 / SW 19), GPIO 48 WS2812 status LED, the shared Start gate, and the staged splash
+7. Local panel: confirm SH1106 at 0x3C on `Wire` (14/42 pins), encoder detents/tones (CLK 47 / DT 46 / SW 3), GPIO 48 WS2812 status LED, the shared Start gate, and the staged splash
 
 ## Changelog
 
 - 2026-09-20 — Local OLED + encoder panel: `ui.cpp`/`ui.h`/`ui_icons.h` `uiTask` on core 0, SH1106 on `Wire1` (GPIO 25/47), KY-040 on 22/23/24, boot splash + Home/Per-motor/Fault Log/Diagnostics/Firmware/Network screens, `toneBack()`, shared `protectionCanStart()` gate, non-destructive `protectionCopyLog()` ring, cross-core buzzer mutex, U8g2 dependency.
 - 2026-09-21 — Pin/bus correction: GPIO 22–25 do not exist on ESP32-S3. Encoder CLK/DT/SW moved to 47/48/46 (GPIO 46 is ENC_SW only). OLED shares the ADS1115 I²C bus (GPIO 14/42) via `U8G2_SH1106_128X64_NONAME_F_HW_I2C`; `s_i2c_mu` serializes every Wire transaction. Dropped `OLED_SDA_PIN`/`OLED_SCL_PIN`/`Wire1`.
 - 2026-09-21 — Encoder off GPIO 48 (onboard WS2812): CLK 47 / DT 46 / SW 19. NeoPixel status LED on GPIO 48 (worst-state Fault > Running > Cooling > Stopped; thermal gradient while Running; ~2 Hz fault/cooling flash). 3-frame RUNNING/FAULT/COOLING icons (~450 ms). Centered splash. Adafruit NeoPixel library.
+- 2026-09-21 — ENC_SW off GPIO 19 (USB D-): native USB CDC is the serial path on this board; `pinMode(19, INPUT)` crashed boot and broke Serial. Moved ENC_SW to GPIO 3 (strapping-safe JTAG source; KY-040 pull-up holds HIGH at boot). Early `Serial.println("MPS-505 boot...")` in `setup()`.
 - 2026-09-21 — Optional per-motor stall recovery (jam release): 3× 300/500 ms pulses after 500 ms of Running; I²t and SENSOR stay live; stall / UV / OV / NO_CURRENT skipped while `jam_phase != IDLE`. 32-entry RAM fault ring feeds the web log when SD is missing (`ram_only`). NVS schema 3.
 - 2026-09-21 — Clear Logs clears SD and RAM ring (`protectionClearLog`); OLED rebuilds motor order every 160 ms refresh; web log already served RAM with `ram_only` when SD missing.
 

@@ -5,13 +5,13 @@
 // ESP32-S3-N16R8 — all GPIO numbers live in this file only.
 // GPIO 22-25 do not exist on this chip at all (not physical pins).
 // GPIO 26-37 are reserved for flash/octal PSRAM on this N16R8 module.
-// GPIO 0/3/45 remain fully off-limits (strapping / boot mode / flash / JTAG).
-// GPIO 43/44 are UART0 — this board programs and talks Serial exclusively
-// through an external USB-to-serial bridge; do not touch them.
+// GPIO 0/45 remain fully off-limits (boot mode / flash voltage).
+// GPIO 3 is used as ENC_SW (strapping-safe with pull-up).
+// GPIO 43/44 are UART0 — leave them untouched.
 // GPIO 46 is input-only and a strapping pin (ROM extra boot-log text only,
 // unrelated to boot mode / flash mode / JTAG) and is used here as ENC_B (DT).
-// GPIO 19 is native-USB D- on silicon; this board never uses native USB, so
-// it is a free GPIO used as ENC_SW.
+// GPIO 19/20 are native USB D-/D+ — NEVER use as GPIO on this board
+// (USB CDC is active).
 // GPIO 48 is the onboard WS2812-style RGB LED (not an encoder pin).
 
 // ACS712-30A current-sense inputs — ADC1 only (Wi-Fi makes ADC2 unreliable).
@@ -46,10 +46,11 @@ static const int PIN_BUZZER = 21;
 // all three lines, so plain INPUT (no internal pull-up, no external resistors).
 static const int ENC_A_PIN  = 47;  // CLK
 static const int ENC_B_PIN  = 46;  // DT (GPIO 46 is input-only; encoder line only)
-// GPIO 19 is normally native-USB D-. This board's programming and Serial
-// Monitor go exclusively through the UART bridge chip (GPIO 43/44); native
-// USB is never used, so GPIO 19 is a genuinely free GPIO here.
-static const int ENC_SW_PIN = 19;  // SW (active-LOW when pressed)
+// GPIO 3 is a strapping pin (JTAG source). KY-040's pull-up
+// holds it HIGH at boot (JTAG from GPIO pins — never used).
+// Safe as input after boot. GPIO 19 is USB D- and must never
+// be used as GPIO on this board.
+static const int ENC_SW_PIN = 3;  // SW (active-LOW when pressed)
 
 // Onboard WS2812-style RGB LED. One-wire, NOT I2C — never take s_i2c_mu.
 static const int LED_PIN = 48;

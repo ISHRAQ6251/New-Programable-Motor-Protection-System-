@@ -91,7 +91,7 @@ No GPIO literals outside `config_pins.h`.
 
 ## 4. Hardware and pin map
 
-Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/3/45 remain fully off-limits (strapping / boot / JTAG). GPIO 46 is input-only/strapping and is ENC_B (DT). GPIO 19 is ENC_SW (native USB unused; programming/Serial go through UART 43/44). GPIO 48 is the onboard WS2812. GPIO 43/44 stay untouched.
+Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 are reserved for flash/octal PSRAM on this N16R8 module. GPIO 0/45 remain fully off-limits (boot mode / flash voltage). GPIO 3 is ENC_SW (strapping-safe with the KY-040 pull-up). GPIO 46 is input-only/strapping and is ENC_B (DT). GPIO 19/20 are native USB D-/D+ and must never be used as GPIO (USB CDC is the serial path). GPIO 48 is the onboard WS2812. GPIO 43/44 stay untouched.
 
 | Function | GPIO | Notes |
 |---|---|---|
@@ -120,7 +120,7 @@ Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physi
 | I²C SCL | 42 | Shared ADS1115 + SH1106 |
 | Encoder CLK | 47 | KY-040 A |
 | Encoder DT | 46 | KY-040 B; GPIO 46 input-only, encoder line only |
-| Encoder SW | 19 | KY-040 switch; native USB unused on this board |
+| Encoder SW | 3 | KY-040 switch; strapping-safe with module pull-up. GPIO 19 is USB D- and must never be used as GPIO |
 | Status LED | 48 | Onboard WS2812, one-wire — never take `s_i2c_mu` |
 
 Analog path (current):
