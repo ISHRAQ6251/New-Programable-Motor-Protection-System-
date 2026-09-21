@@ -32,6 +32,7 @@ static void clearMotors() {
       s_blob.motors[i].channels[p] = CH_UNUSED;
       s_blob.motors[i].relay_active_high[p] = 1;
     }
+    s_blob.motors[i].voltage_channel = VCH_SAME;
   }
 }
 
@@ -41,6 +42,7 @@ static void clearRecord(MotorRecord *m) {
     m->channels[p] = CH_UNUSED;
     m->relay_active_high[p] = 1;
   }
+  m->voltage_channel = VCH_SAME;
 }
 
 static bool channelTaken(uint8_t ch, int skip_idx) {
@@ -116,6 +118,10 @@ static bool validateStructural(const MotorRecord *m, char *err, size_t err_len) 
       return false;
     }
   }
+  if (m->voltage_channel != VCH_SAME && m->voltage_channel >= MAX_CHANNELS) {
+    snprintf(err, err_len, "voltage channel must be 0-7 or Auto");
+    return false;
+  }
   if (m->step_count < 1 || m->step_count > MAX_STEPS) {
     snprintf(err, err_len, "step_count must be 1..8");
     return false;
@@ -187,6 +193,9 @@ static void sanitizeLoadedBlob() {
         if (ok) {
           for (int p = 0; p < m->phase_count; p++) {
             used_ch[m->channels[p]] = true;
+          }
+          if (m->is_ac || m->voltage_channel >= MAX_CHANNELS) {
+            m->voltage_channel = VCH_SAME;
           }
         }
       }
@@ -326,6 +335,46 @@ static bool allocLocked(uint8_t phase_count, uint8_t *out_ch) {
   return found == phase_count;
 }
 
+static bool takeChannelsLocked(MotorRecord *rec, int skip_idx, char *err, size_t err_len) {
+  bool any = false;
+  for (int p = 0; p < rec->phase_count; p++) {
+    if (rec->channels[p] != CH_UNUSED) {
+      any = true;
+      break;
+    }
+  }
+  if (!any) {
+    uint8_t ch[MAX_PHASES];
+    if (!allocLocked(rec->phase_count, ch)) {
+      snprintf(err, err_len, "not enough free channels");
+      return false;
+    }
+    memcpy(rec->channels, ch, sizeof(ch));
+    return true;
+  }
+  for (int p = 0; p < rec->phase_count; p++) {
+    const uint8_t c = rec->channels[p];
+    if (c >= MAX_CHANNELS) {
+      snprintf(err, err_len, "channel %d required", p);
+      return false;
+    }
+    if (channelTaken(c, skip_idx)) {
+      snprintf(err, err_len, "channel %u already in use", (unsigned)c);
+      return false;
+    }
+    for (int q = 0; q < p; q++) {
+      if (rec->channels[q] == c) {
+        snprintf(err, err_len, "duplicate channel %u", (unsigned)c);
+        return false;
+      }
+    }
+  }
+  for (int p = rec->phase_count; p < MAX_PHASES; p++) {
+    rec->channels[p] = CH_UNUSED;
+  }
+  return true;
+}
+
 bool motorStoreAlloc(uint8_t phase_count, uint8_t *out_ch) {
   lock();
   const bool ok = allocLocked(phase_count, out_ch);
@@ -376,21 +425,22 @@ int motorStoreAdd(const MotorRecord *in, char *err, size_t err_len) {
     snprintf(err, err_len, "motor list full");
     return -1;
   }
-  uint8_t ch[MAX_PHASES];
-  if (!allocLocked(rec.phase_count, ch)) {
+  if (!takeChannelsLocked(&rec, -1, err, err_len)) {
     unlock();
-    snprintf(err, err_len, "not enough free channels");
     return -1;
   }
-  memcpy(rec.channels, ch, sizeof(ch));
   rec.used = 1;
   rec.stall_recovery = rec.stall_recovery ? 1 : 0;
   if (rec.is_ac) {
     rec.uv_volts = 0;
     rec.ov_volts = 0;
+    rec.voltage_channel = VCH_SAME;
   } else {
     rec.rated_ac_v = 0;
     rec.mains_hz = 0;
+    if (rec.voltage_channel >= MAX_CHANNELS) {
+      rec.voltage_channel = VCH_SAME;
+    }
   }
   s_blob.motors[slot] = rec;
   unlock();
@@ -421,13 +471,29 @@ bool motorStoreEdit(int idx, const MotorRecord *in, char *err, size_t err_len) {
   rec.used = 1;
   rec.stall_recovery = rec.stall_recovery ? 1 : 0;
   rec.phase_count = s_blob.motors[idx].phase_count;
-  memcpy(rec.channels, s_blob.motors[idx].channels, sizeof(rec.channels));
+  bool any_ch = false;
+  for (int p = 0; p < rec.phase_count; p++) {
+    if (rec.channels[p] != CH_UNUSED) {
+      any_ch = true;
+      break;
+    }
+  }
+  if (!any_ch) {
+    memcpy(rec.channels, s_blob.motors[idx].channels, sizeof(rec.channels));
+  } else if (!takeChannelsLocked(&rec, idx, err, err_len)) {
+    unlock();
+    return false;
+  }
   if (rec.is_ac) {
     rec.uv_volts = 0;
     rec.ov_volts = 0;
+    rec.voltage_channel = VCH_SAME;
   } else {
     rec.rated_ac_v = 0;
     rec.mains_hz = 0;
+    if (rec.voltage_channel >= MAX_CHANNELS) {
+      rec.voltage_channel = VCH_SAME;
+    }
   }
   s_blob.motors[idx] = rec;
   unlock();
@@ -462,6 +528,7 @@ bool motorStoreDelete(int idx, MotorStatus status, char *err, size_t err_len) {
     s_blob.motors[idx].channels[p] = CH_UNUSED;
     s_blob.motors[idx].relay_active_high[p] = 1;
   }
+  s_blob.motors[idx].voltage_channel = VCH_SAME;
   unlock();
   if (!motorStoreSave()) {
     lock();
