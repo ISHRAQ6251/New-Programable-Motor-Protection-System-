@@ -65,6 +65,7 @@ struct MotorRecord {
   float   uv_volts;
   float   ov_volts;
   uint8_t stall_recovery;
+  uint8_t voltage_channel;
 };
 
 struct MotorBlob {
@@ -98,6 +99,8 @@ struct ChannelRuntime {
   float    v_zero;
   float    last_v;
   uint8_t  v_calibrated;
+  float    v_filt;
+  uint8_t  v_filt_valid;
 };
 
 struct MotorRuntime {
