@@ -13,6 +13,7 @@ static const int AUTH_PASS_LEN = 32;
 
 static const uint8_t CH_UNUSED = 0xFF;
 static const uint8_t VCH_SAME  = 0xFF;
+static const uint8_t RELAY_ACTIVE_HIGH_DEFAULT = 0;
 
 static const int RMS_SAMPLES     = 32;
 static const int CAL_SAMPLES     = 64;

@@ -27,7 +27,7 @@ Correctness and code clarity matter more than polish. This is a university engin
 | UV / OV trip | DC only, optional: `0` disables each independently; if both set, OV > UV |
 | Rated AC voltage | AC nameplate only, stored in NVS. Never sensed, never a trip input |
 | I²C pins | GPIO 14 SDA / 42 SCL. Explicit `Wire.begin(14, 42)`, not default 8/9 |
-| Relay default | Active-HIGH, OFF=LOW. De-energized on boot. Per-channel override in motor record |
+| Relay default | Active-LOW, OFF=HIGH. De-energized on boot. Per-channel override in motor record |
 | Mains frequency | Per motor, 50 or 60 Hz (AC only) |
 | I²t model | Classic energy: `E += I_rms² × dt`, trip vs `(k×In)² × t_trip` |
 | Below pickup | Decay `E` toward 0 over that motor's cooling time |
@@ -103,7 +103,7 @@ Module: ESP32-S3-N16R8. GPIO 22–25 do not exist on this chip at all (not physi
 | I-sense CH5 | 7 | ADC1 |
 | I-sense CH6 | 8 | ADC1 |
 | I-sense CH7 | 9 | ADC1 |
-| Relay CH0 | 15 | Active-HIGH default |
+| Relay CH0 | 15 | Active-LOW default |
 | Relay CH1 | 16 | |
 | Relay CH2 | 17 | |
 | Relay CH3 | 18 | |
@@ -142,9 +142,9 @@ Analog path (DC voltage):
 
 Relays:
 
-- `setup()` sets every relay pin OUTPUT LOW before Wi-Fi or tasks start
-- Energize = GPIO HIGH when polarity is active-HIGH; inverted when the motor record says active-LOW
-- MCU reset / boot: pins start LOW → coils de-energized for the default polarity
+- `setup()` sets every relay pin OUTPUT HIGH before Wi-Fi or tasks start (active-LOW default, OFF=HIGH)
+- Energize = GPIO LOW when polarity is active-LOW; inverted when the motor record says active-HIGH
+- MCU reset / boot: pins driven HIGH → coils de-energized for the default polarity
 
 ## 5. Data model
 
@@ -166,7 +166,7 @@ MotorRecord
   float    cooling_s
   uint8_t  auto_restart         // 0/1
   uint8_t  stall_recovery       // 0/1 jam release; default 0
-  uint8_t  relay_active_high[3] // 1 = active-HIGH (default)
+  uint8_t  relay_active_high[3] // 0 = active-LOW (default)
   uint8_t  step_count           // 1..8
   float    step_k[8]            // multiplier of In
   float    step_t_s[8]          // trip time at that multiple

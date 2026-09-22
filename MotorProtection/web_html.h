@@ -145,7 +145,7 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <input id="a-jam" type="checkbox">
       <span class="help">Briefly pulses power to dislodge obstructions. For conveyors. Not for pumps or precision loads.</span>
       <label for="a-pol">Relay polarity</label>
-      <select id="a-pol" name="pol"><option value="1">Active-HIGH (default)</option><option value="0">Active-LOW</option></select>
+      <select id="a-pol" name="pol"><option value="0">Active-LOW (default)</option><option value="1">Active-HIGH</option></select>
       <label for="a-n">Protection steps N</label>
       <input id="a-n" name="n" type="number" min="1" max="8" value="3" required>
       <div class="steps" id="a-steps"></div>
@@ -195,7 +195,7 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <input id="e-jam" type="checkbox">
       <span class="help">Briefly pulses power to dislodge obstructions. For conveyors. Not for pumps or precision loads.</span>
       <label for="e-pol">Relay polarity</label>
-      <select id="e-pol"><option value="1">Active-HIGH</option><option value="0">Active-LOW</option></select>
+      <select id="e-pol"><option value="0">Active-LOW (default)</option><option value="1">Active-HIGH</option></select>
       <label for="e-n">Protection steps N</label>
       <input id="e-n" type="number" min="1" max="8" required>
       <div class="steps" id="e-steps"></div>

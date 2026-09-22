@@ -189,7 +189,7 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m) {
   memset(m, 0, sizeof(*m));
   for (int p = 0; p < MAX_PHASES; p++) {
     m->channels[p] = CH_UNUSED;
-    m->relay_active_high[p] = 1;
+    m->relay_active_high[p] = RELAY_ACTIVE_HIGH_DEFAULT;
   }
   copyParam(req, "name", m->name, NAME_LEN, "");
   m->phase_count = (uint8_t)paramI(req, "phases", "1");
@@ -220,7 +220,7 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m) {
       m->channels[p] = (ch >= 0 && ch < MAX_CHANNELS) ? (uint8_t)ch : CH_UNUSED;
     }
   }
-  const uint8_t pol = (uint8_t)paramI(req, "pol", "1");
+  const uint8_t pol = (uint8_t)paramI(req, "pol", RELAY_ACTIVE_HIGH_DEFAULT ? "1" : "0");
   for (int p = 0; p < MAX_PHASES; p++) {
     m->relay_active_high[p] = pol;
   }

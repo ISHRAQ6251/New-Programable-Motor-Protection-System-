@@ -29,7 +29,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 | Flash | 16 MB (128 Mb) |
 | PSRAM | OPI PSRAM |
 | ACS712 modules | ACS712-30A, 5 V supply, 66 mV/A |
-| Relays | Logic-level modules, default active-HIGH (GPIO HIGH = coil on) |
+| Relays | Logic-level modules, default active-LOW (GPIO LOW = coil on, boot HIGH = OFF) |
 | SD | RoboticsBD 3.3 V Micro SD breakout, SPI, no onboard regulator |
 | Buzzer | 1x passive (PWM) |
 | DC voltage | 2× ADS1115 (I²C), 150 k / 10 k divider per channel |
@@ -67,7 +67,7 @@ All GPIO numbers exist only in `MotorProtection/config_pins.h`. Changing a pin m
 | I-sense CH5 | 7 | Analog in (ADC1) | |
 | I-sense CH6 | 8 | Analog in (ADC1) | |
 | I-sense CH7 | 9 | Analog in (ADC1) | |
-| Relay CH0 | 15 | Digital out | Active-HIGH default, boot LOW = OFF |
+| Relay CH0 | 15 | Digital out | Active-LOW default, boot HIGH = OFF |
 | Relay CH1 | 16 | Digital out | |
 | Relay CH2 | 17 | Digital out | |
 | Relay CH3 | 18 | Digital out | |
@@ -142,9 +142,9 @@ I (A) = (Vadc_mV - zero_mV) / 39.6
                                         +----------- SD GND / ADS GND
 ```
 
-Relay modules typically need **5 V** for the coil supply and a **3.3 V-tolerant** IN pin. Confirm your module datasheet. Default firmware polarity: IN HIGH = motor power ON. Per-motor polarity can be inverted in the Add/Edit form if the module is active-LOW.
+Relay modules typically need **5 V** for the coil supply and a **3.3 V-tolerant** IN pin. Confirm your module datasheet. Default firmware polarity: IN LOW = motor power ON (active-LOW). Per-motor polarity can be inverted in the Add/Edit form if the module is active-HIGH.
 
-**Fail-safe:** `setup()` drives every relay pin LOW before Wi-Fi starts. With the default active-HIGH wiring, motors stay off across reset.
+**Fail-safe:** `setup()` drives every relay pin HIGH before Wi-Fi starts. With the default active-LOW wiring, motors stay off across reset.
 
 ### 2.6 DC voltage sensing (ADS1115)
 
@@ -325,7 +325,7 @@ Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silen
 6. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
 7. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off). On still latches Fault after 3 consecutive trips; a 10-minute trip-free run, Start, or Reset clears the counter.
 8. **Stall recovery (jam release)** — optional. Off by default. See §5.2.1.
-9. **Relay polarity** — Active-HIGH (default) or Active-LOW for this motor's channels.
+9. **Relay polarity** — Active-LOW (default) or Active-HIGH for this motor's channels.
 10. **N protection steps** (1–8). For each step enter:
    - **k × In** — current multiplier (e.g. 1.2 means 1.2 × operating current)
    - **trip time (s)** — how long that energy budget lasts at exactly `k × In`
@@ -619,7 +619,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | No Wi-Fi named MPS-505 | Short AP password leftover, or old SSID cached | Flash current firmware (`mps50005` is 8 chars). Forget old `MPS` network. Read Serial banner |
 | Browser asks for Basic Auth | Old firmware | Reflash this tree; login is `/login` |
 | Login page rejects mps / mps500 | Credentials changed in NVS | Serial banner prints the current pair. Or erase flash / NVS |
-| Relays chatter or motors run at boot | Active-LOW module with default HIGH polarity | Set polarity to Active-LOW on Add/Edit, or invert the IN wiring |
+| Relays chatter or motors run at boot | Active-HIGH module with default LOW polarity | Set polarity to Active-HIGH on Add/Edit, or invert the IN wiring |
 | Thermal % stuck / false SENSOR_FAULT with no motor | Uncalibrated zero or floating sense pin | Calibrate with no current. Ground unused sense inputs through the divider |
 | Log page yellow banner “RAM buffer only” | No SD or 5 V fed to a 3.3 V breakout | Insert a FAT-formatted card on 3.3 V SPI for persistent CSV; RAM ring still shows last 32 trips |
 | Compile error `ledcChangeFrequency` | Mixing ESP32 core 2.x vs 3.x | Use Arduino-ESP32 3.x and `ledcAttach` / 3-arg `ledcChangeFrequency` |

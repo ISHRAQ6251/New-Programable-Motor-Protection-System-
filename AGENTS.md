@@ -33,7 +33,7 @@ GPIO 22–25 do not exist on this chip at all (not physical pins). GPIO 26–37 
 | Function | GPIO | Notes |
 |---|---|---|
 | I-sense CH0–CH7 | 1, 2, 4, 5, 6, 7, 8, 9 | ADC1 only |
-| Relay CH0–CH7 | 15, 16, 17, 18, 38, 39, 40, 41 | Active-HIGH default, OFF=LOW |
+| Relay CH0–CH7 | 15, 16, 17, 18, 38, 39, 40, 41 | Active-LOW default, OFF=HIGH |
 | SD MOSI / MISO / SCK / CS | 11 / 13 / 12 / 10 | SPI, 3.3 V breakout, not SDIO |
 | Buzzer | 21 | Passive, LEDC PWM |
 | I²C SDA / SCL | **14 / 42** | Shared ADS1115 + SH1106. `Wire.begin(14, 42)` once via `i2cInitOnce()` — **not** default 8/9. Serialized by `s_i2c_mu`. |
@@ -50,7 +50,7 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 
 NVS namespace `mps`, blob of `MotorRecord[8]`. Never stored on SD.
 
-Motor record: name, phase count (1 or 3), assigned channel indices (Auto = lowest free, or pin `ch0`/`ch1`/`ch2` 0–7), AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, cooling time, auto-restart, stall recovery (jam release, default off), per-channel relay polarity (default active-HIGH), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled), optional `voltage_channel` (0–7 or `VCH_SAME` 0xFF = same as current CH0).
+Motor record: name, phase count (1 or 3), assigned channel indices (Auto = lowest free, or pin `ch0`/`ch1`/`ch2` 0–7), AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, cooling time, auto-restart, stall recovery (jam release, default off), per-channel relay polarity (default active-LOW), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled), optional `voltage_channel` (0–7 or `VCH_SAME` 0xFF = same as current CH0).
 
 Runtime (RAM): per-channel zero ADC, last RMS, I²t energy, voltage zero and last V; per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
 
@@ -82,7 +82,7 @@ DC only, after 750 ms of Running (relay just closed): 4-sample ADS average then 
 
 On trip: de-energize that motor's relay(s), `toneFault()`, append SD log if mounted, enter Cooling. After cooling: auto-restart if enabled **and** consecutive trips `< 3`, else Fault. A trip-free run of 10 min clears the restart counter; Start and Reset also clear it. Reset from UI clears Fault/Cooling to Stopped and silences the buzzer.
 
-Fail-safe: all relay GPIOs forced LOW at the top of `setup()` (before `Serial.begin` / 200 ms delay), then `relaysBegin()`. Protection task feeds a 5 s Task WDT; a hang resets the MCU and `setup()` drops relays. Protection never depends on SD. Sample each running motor then trip immediately (not after every other channel). `dt` credited up to 5 s after a task stall.
+Fail-safe: all relay GPIOs forced to the de-energized level at the top of `setup()` (before `Serial.begin` / 200 ms delay) — HIGH for the default active-LOW polarity — then `relaysBegin()`. Protection task feeds a 5 s Task WDT; a hang resets the MCU and `setup()` drops relays. Protection never depends on SD. Sample each running motor then trip immediately (not after every other channel). `dt` credited up to 5 s after a task stall.
 
 ## Current implementation status
 
@@ -91,7 +91,7 @@ Fail-safe: all relay GPIOs forced LOW at the top of `setup()` (before `Serial.be
 | Module | File | Status |
 |---|---|---|
 | Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 4, UV/OV + rated AC, jam-release, `voltage_channel` / `VCH_SAME`, VoltageSample |
-| Relays fail-safe | `relays.cpp` | done — GPIO LOW at top of `setup()` then `relaysBegin()`; polarity printed at de-energize |
+| Relays fail-safe | `relays.cpp` | done — GPIO HIGH at top of `setup()` (active-LOW default, OFF=HIGH) then `relaysBegin()`; polarity printed at de-energize |
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
 | Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean; stuck-ADC Serial |
 | DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 20 ms conversion timeout, `s_i2c_mu`, 4-sample average |
@@ -101,7 +101,7 @@ Fail-safe: all relay GPIOs forced LOW at the top of `setup()` (before `Serial.be
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
 | Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`); Add/Edit `ch0`–`ch2` + `vch` dropdowns |
 | Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire; KY-040 on 47/46/3; WS2812 on GPIO 48; 3-frame status icons; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
-| Sketch entry | `MotorProtection.ino` | done — relay GPIOs LOW first; mutex/queue init (`voltageI2cMutexInit` / `buzzerMutexInit` / `motorStoreMutexInit` / `protectionMutexInit` / `webMutexInit`) runs before any `begin()`; `uiBegin()` starts `uiTask` only after those handles exist |
+| Sketch entry | `MotorProtection.ino` | done — relay GPIOs driven de-energized first (HIGH for active-LOW default); mutex/queue init (`voltageI2cMutexInit` / `buzzerMutexInit` / `motorStoreMutexInit` / `protectionMutexInit` / `webMutexInit`) runs before any `begin()`; `uiBegin()` starts `uiTask` only after those handles exist |
 
 Boot Serial prints AP SSID/password/IP, dashboard login (`mps` / `mps500`, **not** AP pass), and free heap (`HEAP:`). Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected.
 
@@ -133,7 +133,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Auth: themed login page + session cookie; default `mps` / `mps500` (was HTTP Basic Auth; user requested custom page)
 - Sensor fault = trip immediately (not latch, not alarm-only)
 - ACS712-30A 66 mV/A
-- Relay default active-HIGH, OFF=LOW
+- Relay default active-LOW, OFF=HIGH
 - Mains frequency selectable per motor
 - Classic I²t energy (not inverse-time interpolation, not independent step timers)
 - FreeRTOS task architecture: protection + `loop()` on core 1, Wi-Fi + UI on core 0 (originally two tasks; panel adds `uiTask`)
@@ -212,7 +212,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - OLED rebuilds motor order every UI refresh (160 ms); motor add/edit/delete from web dashboard appears on panel without reboot.
 - Web log page serves RAM ring with ram_only:true when SD is missing; JavaScript shows warning banner. Clear stays available; Export stays SD-only.
 - DC voltage noise: ADS average is `V_AVG_SAMPLES` (4) in `voltageSample()`, then 0.9/0.1 LPF on `Vbus` (`ChannelRuntime.v_filt`). UV/OV uses the filtered value after `UV_GRACE_MS` (750). Serial `VOLT: ch=… adc=… zero=… bus=…` every 2 s while Running. Do not trip on a single raw ADS sample.
-- Relay GPIOs are forced OUTPUT LOW at the very top of `setup()`, before `Serial.begin()`. `relaysBegin()` repeats the fail-safe.
+- Relay GPIOs are forced OUTPUT to the de-energized level at the very top of `setup()`, before `Serial.begin()` (HIGH for default active-LOW). `relaysBegin()` repeats the fail-safe. `RELAY_ACTIVE_HIGH_DEFAULT = 0`.
 - Add/Edit channel dropdowns (`ch0`/`ch1`/`ch2`, -1 = Auto) and DC `vch` (`VCH_SAME` or 0–7) are stored in the NVS motor blob (schema 4). Used current channels are disabled in the other dropdowns; voltage taps may be shared.
 
 ## Next planned steps
@@ -236,5 +236,6 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - 2026-09-21 — Clear Logs clears SD and RAM ring (`protectionClearLog`); OLED rebuilds motor order every 160 ms refresh; web log already served RAM with `ram_only` when SD missing.
 - 2026-09-21 — DC voltage filter against false UV/OV: 4-sample ADS average, 0.9/0.1 LPF, `UV_GRACE_MS` 750, `VOLT:` Serial. Relays OUTPUT LOW at the top of `setup()` before Serial.
 - 2026-09-22 — User-selectable current channels (`ch0`–`ch2`, Auto = lowest free) and per-motor DC voltage sense channel (`vch` / `voltage_channel`, `VCH_SAME` = same as current CH0). NVS schema 4.
+- 2026-09-22 — Default relay polarity reversed to active-LOW (`RELAY_ACTIVE_HIGH_DEFAULT = 0`). Boot fail-safe drives GPIO HIGH (OFF). Add/Edit default is Active-LOW.
 
 Last firmware: I²C `i2cInitOnce` / `voltageReprobe` / no `Wire.end()` (origin `455debf` and follow-up quality), on top of Calibrate re-probe (`2f53bc7`), divider 150 kΩ / 10 kΩ (`b5e3754`), and safety review (`912a982`).

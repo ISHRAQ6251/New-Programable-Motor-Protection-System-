@@ -6,9 +6,9 @@
 void relaysBegin() {
   for (int i = 0; i < MAX_CHANNELS; i++) {
     pinMode(PIN_RELAY[i], OUTPUT);
-    digitalWrite(PIN_RELAY[i], LOW);
+    digitalWrite(PIN_RELAY[i], RELAY_ACTIVE_HIGH_DEFAULT ? LOW : HIGH);
   }
-  Serial.println("RELAY: all OFF (default active-HIGH, GPIO LOW = de-energized)");
+  Serial.println("RELAY: all OFF (default active-LOW, GPIO HIGH = de-energized)");
 }
 
 void relaysSetChannel(int ch, bool energized, uint8_t active_high) {
@@ -38,7 +38,7 @@ void relaysMotorOn(const uint8_t *channels, const uint8_t *active_high, uint8_t 
 void relaysLogPolarity(const uint8_t *active_high_by_ch) {
   Serial.print("RELAY: polarity");
   for (int i = 0; i < MAX_CHANNELS; i++) {
-    const uint8_t ah = active_high_by_ch ? active_high_by_ch[i] : 1;
+    const uint8_t ah = active_high_by_ch ? active_high_by_ch[i] : RELAY_ACTIVE_HIGH_DEFAULT;
     Serial.printf(" CH%d=%s", i, ah ? "HIGH" : "LOW");
   }
   Serial.println();
@@ -46,7 +46,7 @@ void relaysLogPolarity(const uint8_t *active_high_by_ch) {
 
 void relaysDeenergizeAll(const uint8_t *active_high_by_ch) {
   for (int i = 0; i < MAX_CHANNELS; i++) {
-    const uint8_t ah = active_high_by_ch ? active_high_by_ch[i] : 1;
+    const uint8_t ah = active_high_by_ch ? active_high_by_ch[i] : RELAY_ACTIVE_HIGH_DEFAULT;
     relaysSetChannel(i, false, ah);
   }
   relaysLogPolarity(active_high_by_ch);

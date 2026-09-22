@@ -26,7 +26,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - Motor config in NVS; protection still runs if the SD card is missing
 - **RAM fault-log buffer** (32 entries) feeds the Log page when SD is absent (lost on reboot)
 - Three FreeRTOS tasks: Wi-Fi + UI on core 0, protection + `loop()` on core 1
-- Relays fail-safe OFF in `setup()` before Wi-Fi starts
+- Relays fail-safe OFF in `setup()` before Wi-Fi starts (default active-LOW: GPIO HIGH = de-energized)
 
 ## Hardware
 
@@ -37,7 +37,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 | Sensors | ACS712-30A, 66 mV/A, 5 V supply |
 | Analog path | 10 k / 15 k divider (x0.6) to ADC1 — about 39.6 mV/A |
 | DC voltage | 2× ADS1115 (I²C **0x48** ADDR→GND = CH0–3, **0x49** ADDR→VDD = CH4–7), 150 k / 10 k divider (scale 16), tap downstream of each relay |
-| Relays | Logic-level modules, default active-HIGH, boot LOW = OFF |
+| Relays | Logic-level modules, default active-LOW, boot HIGH = OFF |
 | SD | 3.3 V SPI breakout (not SDIO, not 5 V) |
 | Buzzer | Passive, LEDC PWM |
 
@@ -174,7 +174,7 @@ LICENSE                   MIT
 
 This is a university protection prototype. Commissioning on a real motor still needs a fused supply, relays rated for the load, and a mechanical emergency stop independent of the ESP32.
 
-Relays default OFF at boot. Confirm polarity before the first Start (default active-HIGH; invert per motor in Add/Edit if the module is active-LOW). SoftAP is for the bench, not as a WAN gateway.
+Relays default OFF at boot. Confirm polarity before the first Start (default active-LOW; invert per motor in Add/Edit if the module is active-HIGH). SoftAP is for the bench, not as a WAN gateway.
 
 ## v2 changelog
 
@@ -186,6 +186,7 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - NVS schema 4 (`voltage_channel`; v1/v2/v3 motor blobs discarded)
 - DC voltage filter: 4-sample ADS average, 0.9/0.1 LPF, 750 ms UV/OV grace, `VOLT:` Serial
 - User-selectable current channels (`ch0`–`ch2`) and DC voltage sense channel (`vch`) on Add/Edit
+- Default relay polarity reversed to active-LOW (boot GPIO HIGH = OFF)
 - Local panel: SH1106 128x64 on `Wire1` (GPIO 25/47) + KY-040 encoder on 22/23/24; shared `protectionCanStart()` gate; `toneBack()`; U8g2 (2026-09-20)
 - 2026-09-21 pin/bus correction: encoder 47/48/46; OLED shares ADS1115 `Wire` 14/42; `s_i2c_mu` serializes every Wire transaction; GPIO 22–25 are not physical pins
 - 2026-09-21 encoder off GPIO 48: CLK 47 / DT 46 / SW 19; NeoPixel status LED on GPIO 48; 3-frame status icons

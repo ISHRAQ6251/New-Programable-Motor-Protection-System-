@@ -17,7 +17,7 @@
 // ACS712-30A current-sense inputs — ADC1 only (Wi-Fi makes ADC2 unreliable).
 static const int PIN_ISENSE[8] = {1, 2, 4, 5, 6, 7, 8, 9};
 
-// Relay coil drives. Default polarity is active-HIGH; boot LOW = de-energized.
+// Relay coil drives. Default polarity is active-LOW; boot HIGH = de-energized.
 static const int PIN_RELAY[8] = {15, 16, 17, 18, 38, 39, 40, 41};
 
 // RoboticsBD 3.3 V Micro-SD breakout, SPI mode (not SDIO).

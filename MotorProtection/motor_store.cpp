@@ -30,7 +30,7 @@ static void clearMotors() {
   for (int i = 0; i < MAX_MOTORS; i++) {
     for (int p = 0; p < MAX_PHASES; p++) {
       s_blob.motors[i].channels[p] = CH_UNUSED;
-      s_blob.motors[i].relay_active_high[p] = 1;
+      s_blob.motors[i].relay_active_high[p] = RELAY_ACTIVE_HIGH_DEFAULT;
     }
     s_blob.motors[i].voltage_channel = VCH_SAME;
   }
@@ -40,7 +40,7 @@ static void clearRecord(MotorRecord *m) {
   memset(m, 0, sizeof(*m));
   for (int p = 0; p < MAX_PHASES; p++) {
     m->channels[p] = CH_UNUSED;
-    m->relay_active_high[p] = 1;
+    m->relay_active_high[p] = RELAY_ACTIVE_HIGH_DEFAULT;
   }
   m->voltage_channel = VCH_SAME;
 }
@@ -543,7 +543,7 @@ bool motorStoreDelete(int idx, MotorStatus status, char *err, size_t err_len) {
   memset(&s_blob.motors[idx], 0, sizeof(MotorRecord));
   for (int p = 0; p < MAX_PHASES; p++) {
     s_blob.motors[idx].channels[p] = CH_UNUSED;
-    s_blob.motors[idx].relay_active_high[p] = 1;
+    s_blob.motors[idx].relay_active_high[p] = RELAY_ACTIVE_HIGH_DEFAULT;
   }
   s_blob.motors[idx].voltage_channel = VCH_SAME;
   unlock();

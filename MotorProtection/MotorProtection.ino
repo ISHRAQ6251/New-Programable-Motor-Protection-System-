@@ -38,7 +38,7 @@
 void setup() {
   for (int i = 0; i < MAX_CHANNELS; i++) {
     pinMode(PIN_RELAY[i], OUTPUT);
-    digitalWrite(PIN_RELAY[i], LOW);
+    digitalWrite(PIN_RELAY[i], RELAY_ACTIVE_HIGH_DEFAULT ? LOW : HIGH);
   }
 
   Serial.begin(115200);
@@ -75,7 +75,7 @@ void setup() {
     MotorRecord motors[MAX_MOTORS];
     uint8_t pol[MAX_CHANNELS];
     for (int i = 0; i < MAX_CHANNELS; i++) {
-      pol[i] = 1;
+      pol[i] = RELAY_ACTIVE_HIGH_DEFAULT;
     }
     motorStoreGet(motors);
     for (int i = 0; i < MAX_MOTORS; i++) {
