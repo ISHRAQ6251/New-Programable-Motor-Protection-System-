@@ -10,7 +10,7 @@ This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day u
 
 - Up to **8 protection channels**. Each channel is one ACS712-30A current sensor, one relay, and one DC voltage tap (ADS1115).
 - A **single-phase** motor uses 1 channel. A **three-phase** motor uses 3 linked channels: a fault on any phase opens all three relays, and the dashboard shows one row, not three. Add/Edit can pin those channels (or leave Auto) and, for DC, pick a **voltage sense channel**.
-- Classic **I²t energy** trip curve, plus a faster independent **stall** trip, optional **stall recovery** (jam release), and a **sensor-fault** trip.
+- Classic **I²t energy** trip curve, plus a faster independent **stall** trip, optional **stall recovery** (jam release), optional **inrush** (`start_current` / `icd_ms`), and a **sensor-fault** trip (current path immediate; DC voltage path 3 consecutive faults in 1 s).
 - Motor settings live in on-chip flash (NVS). They survive power cycles even if the SD card is missing.
 - The SD card is used **only** for a persistent fault-history CSV. Missing card: protection and dashboard still run; the Log page shows the last 32 trips from RAM with a “RAM buffer only — logs lost on reboot” banner.
 - Access is local Wi-Fi only: the ESP32 creates network `MPS-505`. There is no router join, no cloud, no DDNS.
@@ -155,7 +155,7 @@ ESP32 ADC1 is fully used by current sensing. DC voltage uses two ADS1115 16-bit 
 | ADS #1 | GND | 0x48 | CH4–CH7 → AIN0–AIN3 |
 | ADS #2 | VDD | 0x49 | CH0–CH3 → AIN0–AIN3 |
 
-Firmware calls `i2cInitOnce()` once (`Wire.begin(14, 42)`). Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins, so the sketch re-binds 14/42 after each `begin()`. **Never `Wire.end()`** — it destroys the driver (see `docs/I2C_TROUBLESHOOTING.md`). Gain is **GAIN_ONE** (±4.096 V). Both ADS1115 modules and the SH1106 OLED share that bus, serialized by `s_i2c_mu`; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a reboot.
+Firmware calls `i2cInitOnce()` once (`Wire.begin(14, 42)`). Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins, so the sketch re-binds 14/42 after each `begin()`. **Never `Wire.end()`** — it destroys the driver (see `docs/I2C_TROUBLESHOOTING.md`). Gain is **GAIN_ONE** (±4.096 V), data rate **128 SPS**. Conversion wait is 10 ms with the I²C mutex released, then poll to 35 ms. Both ADS1115 modules and the SH1106 OLED share that bus, serialized by `s_i2c_mu`; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a reboot.
 
 Each voltage divider taps the **motor terminal downstream of that channel's relay**, not the shared DC bus:
 
@@ -357,7 +357,7 @@ When enabled and the motor has been Running for at least **500 ms**, a stall doe
 
 Timing is fixed (not user-configurable). Jam attempts are a **separate counter** from auto-restart. A successful jam recovery does **not** clear the auto-restart counter. After a failed jam sequence the motor cools, then auto-restart (if enabled) does a full Start — not more jam pulses — and the 500 ms run-in applies again.
 
-While pulses are in progress, I²t energy still accumulates and `SENSOR_FAULT` still trips. Stall, UV/OV, and `NO_CURRENT` are skipped until the sequence ends (the 500 ms wait is the settle window; there is no extra grace).
+While pulses are in progress, I²t energy still accumulates. Stall, UV/OV, `NO_CURRENT`, and `SENSOR_FAULT` are skipped until the sequence ends (the 500 ms wait is the settle window; there is no extra grace).
 
 **Do not enable** on pumps, precision equipment, or fragile loads. The pulses are short, but they still apply power to a stalled machine.
 
@@ -372,11 +372,14 @@ Some motors draw a large initial current while accelerating from rest. A startup
 
 During the first `icd_ms` after Start, the effective stall threshold is `start_current` instead of the normal `stall_amps`. After the window expires, normal stall protection resumes. This is especially useful for motors that naturally start at 4–8× In. Set `start_current` to the expected startup current peak, and use an ICD of roughly 500–3000 ms unless the motor needs a longer ramp-up.
 
-### 5.2.3 Sensor fault debounce
+### 5.2.3 Sensor fault
 
-A real sensor fault is not triggered by one noisy reading. The firmware requires **3 consecutive sensor-fault samples within 1 second** before a motor trips `SENSOR_FAULT`. Single spikes are ignored, but a persistent failure still trips quickly.
+Two paths, both skipped while jam-release pulses run (`jam_phase != IDLE`):
 
-This protects the motor from an isolated bad conversion while still failing fast on an actual out-of-range voltage sensor or missing ADS1115.
+- **Current path** (stuck ADC, mean Vadc outside 0.05–3.05 V, or |I| > 40 A): trip `SENSOR_FAULT` on that sample. Checked **before** stall.
+- **DC voltage path** (missing ADS1115, I²C timeout, |Vadc| > 4 V, or |Vbus| > 55 V): trip `SENSOR_FAULT` only after **3 consecutive voltage faults within 1 s**. A single voltage glitch is ignored.
+
+Auto-restart still applies. This is a trip, not a latch.
 
 ### 5.3 Start, stop, reset, calibrate
 
@@ -457,8 +460,8 @@ types.h                 MotorRecord, commands, statuses, snapshots
 relays.cpp              Polarity-aware coil drive
 buzzer.cpp              Non-blocking LEDC tone sequencer
 sensing.cpp             Current ADC calibrate, true RMS (AC) or mean |i| (DC)
-voltage.cpp / voltage.h 2× ADS1115, i2cInitOnce, voltageReprobe, GAIN_ONE
-protection.cpp          I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power
+voltage.cpp / voltage.h 2× ADS1115, i2cInitOnce, voltageReprobe, GAIN_ONE 128SPS, VOLT_DIAG
+protection.cpp          I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / inrush / power
 motor_store.cpp         NVS blob + login credentials
 net_ap.cpp              SoftAP MPS-505 / mps50005
 sd_log.cpp              Optional /faults.csv
@@ -469,14 +472,15 @@ web.cpp / web_html.h    Async HTTP, session login, dashboard HTML
 
 Boot order in `setup()` (order matters for fail-safe):
 
-1. Relays: all pins OUTPUT LOW
-2. Buzzer, local panel (`uiBegin()` starts `uiTask` and the boot splash), current ADC, ADS1115 (`i2cInitOnce()` → GPIO 14/42)
-3. NVS load (empty list if missing/corrupt/schema mismatch — never invents motors)
-4. De-energize relays using stored polarities; publish boot stages to the splash
-5. Try SD mount (failure is a warning only)
-6. Calibrate current and DC voltage zeros, start protection task (priority 5, core 1)
-7. SoftAP + web server
-8. Print banner, finish the splash, play power-up tone
+1. Relays: all pins OUTPUT HIGH (active-LOW default, OFF=HIGH)
+2. Mutex/queue create (`voltageI2cMutexInit` / `buzzerMutexInit` / `motorStoreMutexInit` / `protectionMutexInit` / `webMutexInit`) before any `begin()`
+3. Buzzer, local panel (`uiBegin()` starts `uiTask` and the boot splash), current ADC, ADS1115 (`i2cInitOnce()` → GPIO 14/42)
+4. NVS load (empty list if missing/corrupt/schema mismatch — never invents motors)
+5. De-energize relays using stored polarities; publish boot stages to the splash
+6. Try SD mount (failure is a warning only)
+7. Calibrate current and DC voltage zeros, start protection task (priority 5, core 1)
+8. SoftAP + web server
+9. Print banner, finish the splash, play power-up tone
 
 Three tasks after boot:
 
@@ -545,14 +549,12 @@ With stall recovery: after 500 ms of Running, up to 4 pulses (300 ms off, 500 ms
 
 ### 7.4 Sensor fault
 
-A real `SENSOR_FAULT` requires **3 consecutive faulted samples within 1 s**. A single noisy glitch or brief out-of-range reading is ignored. Once the count is reached, the firmware trips if, on an assigned channel while Running:
+While `jam_phase == IDLE`, trip `SENSOR_FAULT` as follows:
 
-- Mean ADC voltage outside **0.05–3.05 V** (open or shorted divider)
-- |I_rms| above **40 A** (beyond a 30 A sensor)
-- AC or DC reading **stuck** (identical millivolt samples across a full window)
-- DC: ADS1115 missing / I²C timeout, |V_adc| > 4 V, or |V_bus| > 55 V
+- **Current path** (checked first): mean ADC voltage outside **0.05–3.05 V**, |I_rms| above **40 A**, or a stuck ADC window. This trips on that sample, before stall.
+- **DC voltage path** (after stall): ADS1115 missing / I²C timeout, |V_adc| > 4 V, or |V_bus| > 55 V. Needs **3 consecutive voltage faults within 1 s**; a single voltage glitch is ignored.
 
-A stalled motor is handled as a **stall-first** condition so the sensor fault does not mask the correct trip. Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (this is trip-immediately, not latched).
+Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT`, `OV`, `UV`, `I2T`. Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (trip, not latch). Both sensor-fault paths are skipped during jam release.
 
 If every phase of a Running motor stays below **0.05 × In** for **2 s**, trip `NO_CURRENT`. That catches a broken sense wire sitting at ACS712 mid-rail (~0 A), an open winding, or a relay that never closed.
 
@@ -613,7 +615,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Session cookie | `mps_sess`, HttpOnly, 8 hours |
 | Channels / motors / steps | 8 / 8 / 8 |
 | ACS712 | 30 A, 66 mV/A, divider ×0.6 → 39.6 mV/A |
-| DC voltage | ADS1115 GAIN_ONE, 150 k / 10 k (×16), I²C 14/42 |
+| DC voltage | ADS1115 GAIN_ONE 128 SPS, 150 k / 10 k (×16), I²C 14/42 |
 | ADC | 12-bit, 11 dB attenuation, ADC1 only (current) |
 | RMS samples | ≥ 32 over ≥ 1 AC cycle |
 | Sensor |I| cap | 40 A |
@@ -621,6 +623,8 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | No-current trip | Running and max phase `< 0.05 × In` for 2 s |
 | Auto-restart cap | 3 consecutive trips, then Fault; 10 min clean run clears |
 | Stall recovery | 4 pulses, 300 ms off / 500 ms wait, 500 ms min run; default off |
+| Inrush | `start_current` 0–40 A and `icd_ms` 0–10000 ms; `0` disables |
+| Sensor-fault | current path immediate; voltage path 3 faults in 1 s; both skipped during jam |
 | Task WDT | 5 s on the protection task (hang → MCU reset, relays off) |
 | Fault log | SD `/faults.csv` when present; else 32-entry RAM ring (`ram_only`) |
 | Power | DC `W` (true); AC `VA` (apparent at rated V); PF unknown |

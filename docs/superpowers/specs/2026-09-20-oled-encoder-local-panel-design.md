@@ -1,7 +1,7 @@
 # Local OLED + encoder panel — design
 
-Date: 2026-09-20
-Status: implemented (source only; not flashed)
+Date: 2026-09-20 (updated to live firmware as of `700db56`)
+Status: implemented (source only; not compiled in this environment). Pins: SH1106 on shared `Wire` GPIO 14/42, KY-040 CLK 47 / DT 46 / SW 3, WS2812 GPIO 48.
 
 ## Purpose
 

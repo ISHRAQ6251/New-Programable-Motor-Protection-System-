@@ -1,7 +1,7 @@
 # DC voltage sensing + AC rated-voltage field — Design
 
-Date: 2026-09-13
-Status: Approved (hardware, Adafruit driver, UV/OV optional, tap downstream of relay).
+Date: 2026-09-13 (updated to live firmware as of `700db56`)
+Status: Approved (hardware, Adafruit driver, UV/OV optional, tap downstream of relay). Live UV/OV grace is 750 ms; ADS data rate is 128 SPS; NVS schema is 4.
 Scope: Extend v1 firmware in `MotorProtection/`. Not a rewrite. Not compiled in this environment.
 
 ## 1. Purpose
@@ -25,7 +25,7 @@ Add live DC bus voltage sensing (8 channels via 2x ADS1115) with optional underv
 | AC voltage | Manual "Rated AC voltage" per motor. NVS only. Not live. Not in trip logic |
 | ZMPT101B | Descoping closed. Do not re-open |
 | Sampling | Voltage reads **off-mutex**, same pattern as current |
-| Start grace | UV/OV ignored for 250 ms after entering Running (relay just closed) |
+| Start grace | UV/OV ignored for 750 ms after entering Running (relay just closed) |
 | Module split | New `voltage.cpp` / `voltage.h` |
 
 ## 3. I2C pin re-bind (Adafruit BusIO)
@@ -50,26 +50,30 @@ V_bus  = (V_adc - v_zero) * 16.0        //  (R1+R2)/R2
 
 `v_zero` is the mean AIN voltage with the relay open (calibrate). Never assume 0.000 V.
 
-Sensor-fault (voltage path, Running DC only):
+Sensor-fault (voltage path, Running DC only, skipped while jam-release pulses run):
 
-- ADS missing / I2C fail on that channel's chip
+- ADS missing / I2C fail on that channel's chip (`present=0`)
 - `|V_adc|` near full-scale (> 4.0 V) or `|V_bus|` > 55 V
 
-UV: `V_bus < uv_volts` when `uv_volts > 0`, after 250 ms grace.
-OV: `V_bus > ov_volts` when `ov_volts > 0`, after 250 ms grace.
+Voltage-path `SENSOR_FAULT` trips only after 3 consecutive faults within 1 s. Current-path `SENSOR_FAULT` (stuck ADC, Vadc outside `[0.05, 3.05]` V, |I| > 40 A) is immediate and is checked before stall.
 
-Trip order in one window: SENSOR, STALL, OV, UV, I2T. Same Cooling / auto-restart / Reset as v1.
+UV: filtered `V_bus < uv_volts` when `uv_volts > 0`, after 750 ms grace.
+OV: filtered `V_bus > ov_volts` when `ov_volts > 0`, after 750 ms grace.
+Each ADS reading is the average of 4 conversions, then a 0.9/0.1 LPF on `Vbus`.
 
-DC Start is rejected if either ADS1115 is missing. AC motors run without the ADS chips.
+Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT` (3 consecutive faults in 1 s), `OV`, `UV`, `I2T`. Same Cooling / auto-restart / Reset as v1.
+
+DC Start is rejected if the ADS1115 for that motor's voltage sense channel is missing (dedicated `vch`, or every current channel when `VCH_SAME`). AC motors run without the ADS chips.
 
 ## 5. Data model
 
-`NVS_SCHEMA = 2` at the time of this delta. Size/schema mismatch still starts empty (existing v1 behaviour). A later stall-recovery field bumped the live schema to 3.
+Live firmware uses `NVS_SCHEMA = 4` (`voltage_channel` plus later inrush fields). Size/schema mismatch still starts empty. Older v1/v2/v3 blobs are discarded.
 
 `MotorRecord` adds:
 
 - `rated_ac_v` — AC only, required > 0 when `is_ac`. Stored 0 for DC
 - `uv_volts`, `ov_volts` — DC only, 0 = disabled. Stored 0 for AC
+- `voltage_channel` — DC: 0–7 or `VCH_SAME` (0xFF = same ADS tap as current CH0). AC forces `VCH_SAME`
 
 `ChannelRuntime` adds `v_zero`, `last_v`, `v_calibrated`.
 
@@ -91,7 +95,7 @@ Apparent power (`V × I`) was out of scope here; it is now implemented — see `
 | File | Change |
 |---|---|
 | `config_pins.h` | I2C pins, ADS addresses, divider constants |
-| `config_limits.h` | Schema 2, voltage cal samples, Vbus cap, UV grace |
+| `config_limits.h` | Schema 4, voltage cal samples, Vbus cap, UV grace 750 ms |
 | `types.h` | Record fields, fault types, snapshot volts / ads_ok |
 | `voltage.h/.cpp` | New. ADS1115, cal, sample |
 | `sensing.cpp` | Unchanged role (current only) |

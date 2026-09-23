@@ -1,7 +1,7 @@
 # Power calculation, display, and logging — Design
 
-Date: 2026-09-14
-Status: Approved (uses only data the firmware already acquires; no new sensors or sampling passes).
+Date: 2026-09-14 (updated to live firmware as of `700db56`)
+Status: Approved (uses only data the firmware already acquires; no new sensors or sampling passes). Live UV/OV grace is 750 ms; NVS schema is 4.
 Scope: Extend v2 firmware in `MotorProtection/`. Not a rewrite. Not compiled in this environment.
 
 ## 1. Purpose
@@ -27,7 +27,7 @@ Power factor cannot be measured with this hardware. AC values are always `VA`, n
 | Sample rate | One value per protection pass (~1 Hz), consistent with dashboard poll |
 | Units | DC → `W`; AC → `VA`. Unit also fixes the energy label (`Wh` / `VAh`) |
 | Storage | RAM only, in `MotorRuntime`. No `MotorRecord` change, no NVS schema bump |
-| Lifetime | Accumulates only while Running. Displays `0.0` in Stopped / Fault / Cooling. Resets on boot |
+| Lifetime | Accumulates only while Running. Displays `0.0` in Stopped / Fault / Cooling. Resets on Start and reboot |
 | Logging | Fault CSV only, on trip. No periodic SD writes |
 
 ## 4. Math (per protection pass, while Running)
@@ -65,14 +65,14 @@ float   power;       // W if power_is_w, else VA
 uint8_t power_is_w;
 ```
 
-`MotorRecord` and `MotorBlob` were unchanged by this power delta, so `NVS_SCHEMA` stayed 2 at the time. A later stall-recovery field bumped the live schema to 3.
+`MotorRecord` and `MotorBlob` were unchanged by this power delta. Live firmware is `NVS_SCHEMA = 4` (`voltage_channel`, `start_current`, `icd_ms`). Size/schema mismatch still starts empty.
 
 ## 6. Behavior
 
 - `computePower()` runs right after `applySample()` for each Running motor and before any trip is raised, so the tripping window's power is available to the log.
 - `trip()` snapshots `power` / `power_is_w` before `zeroEnergy()`, so the log carries the window that tripped even though the runtime then resets.
 - `zeroEnergy()` also clears `power` and `energy`; the idle branch of the task clears them too, keeping Stopped / Fault / Cooling at `0.0`.
-- DC during the 250 ms UV/OV grace after Start: power is computed and accumulated normally (V and I are both real there).
+- DC during the 750 ms UV/OV grace after Start: power is computed and accumulated normally (V and I are both real there).
 - `SENSOR_FAULT` logs the power computed from the same reading the `current_A` column already reflects.
 - DC sums per channel (`Σ V_ch × I_ch`). A single-phase DC motor has one term; the unusual 3-phase DC record sums all three, matching the per-channel voltage taps and UV/OV checks.
 

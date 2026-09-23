@@ -72,9 +72,9 @@ Running and `I_rms >= k_min × In`:
 
 Running and below pickup: `E` decays toward 0 over `cooling_s`.
 
-Stall: `I_rms >= stall_amps` on the next window → trip `STALL` immediately, unless stall recovery is enabled. Then, after `JAM_RELEASE_MIN_RUN_MS` of Running: de-energize 300 ms, re-energize, wait 500 ms, re-check. Up to 4 pulses (`JAM_RELEASE_MAX`). Success (current `< stall_amps`) resumes Running and zeros `jam_count` (does **not** clear the auto-restart counter). Exhaustion trips `STALL` and enters Cooling as usual. Jam attempts are separate from auto-restart. While `jam_phase != JAM_IDLE`, skip stall / UV / OV / `NO_CURRENT`; keep I²t accumulation and `SENSOR_FAULT`. No extra grace after jam ends — `JAM_WAIT` is the settle window. During the configured inrush window, the effective stall threshold may be overridden by the motor's `start_current` value to suppress startup false trips.
+Stall: `I_rms >= stall_amps` on the next window → trip `STALL` immediately, unless stall recovery is enabled. Then, after `JAM_RELEASE_MIN_RUN_MS` of Running: de-energize 300 ms, re-energize, wait 500 ms, re-check. Up to 4 pulses (`JAM_RELEASE_MAX`). Success (current `< stall_amps`) resumes Running and zeros `jam_count` (does **not** clear the auto-restart counter). Exhaustion trips `STALL` and enters Cooling as usual. Jam attempts are separate from auto-restart. While `jam_phase != JAM_IDLE`, skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t accumulation. No extra grace after jam ends — `JAM_WAIT` is the settle window. During the configured inrush window (`icd_ms` > 0 and `start_current` > 0), the effective stall threshold is `start_current` instead of `stall_amps`.
 
-Sensor fault (stuck ADC AC or DC, Vadc out of `[0.05, 3.05]` V, |I| > 40 A, missing ADS1115 on a running DC channel, |Vadc| > 4 V, or |Vbus| > 55 V) → trip `SENSOR_FAULT` only after 3 consecutive faults within 1 s. A single noisy spike is ignored. Auto-restart still applies.
+Sensor fault, while `jam_phase == JAM_IDLE`. Current path (stuck ADC AC or DC, mean Vadc outside `[0.05, 3.05]` V, or |I| > 40 A) → trip `SENSOR_FAULT` on that sample. DC voltage path (missing ADS1115, I²C timeout / `present=0`, `|Vadc| > 4` V, or `|Vbus| > 55` V) → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s (`SENSOR_FAULT_MIN_COUNT` / `SENSOR_FAULT_WINDOW_MS`). A single voltage glitch is ignored. Auto-restart still applies. Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT` (debounced), `OV`, `UV`, `I2T`.
 
 Running and max phase current `< 0.05 × In` for 2 s → trip `NO_CURRENT` (broken sense wire / open winding / relay that never closed).
 
@@ -90,16 +90,16 @@ Fail-safe: all relay GPIOs forced to the de-energized level at the top of `setup
 
 | Module | File | Status |
 |---|---|---|
-| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 4, UV/OV + rated AC, jam-release, `voltage_channel` / `VCH_SAME`, VoltageSample |
+| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 4, UV/OV + rated AC, jam-release, `voltage_channel` / `VCH_SAME`, `start_current` / `icd_ms`, VoltageSample / VoltageDiagnostic |
 | Relays fail-safe | `relays.cpp` | done — GPIO HIGH at top of `setup()` (active-LOW default, OFF=HIGH) then `relaysBegin()`; polarity printed at de-energize |
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
 | Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean; stuck-ADC Serial |
-| DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 128 SPS asynchronous conversion wait with 35 ms timeout, `s_i2c_mu`, 4-sample average |
-| I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; optional jam release (4× 300/500 ms); 32-entry RAM trip ring; Calibrate calls `voltageReprobe()` off-mutex; 0.9/0.1 V LPF; 750 ms UV/OV grace; `VOLT:` log; dedicated `voltage_channel` |
+| DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 128 SPS asynchronous conversion wait with 35 ms timeout, `s_i2c_mu`, 4-sample average, per-channel `VOLT_DIAG` ring |
+| I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; optional jam release (4× 300/500 ms); 32-entry RAM trip ring; Calibrate calls `voltageReprobe()` off-mutex; 0.9/0.1 V LPF; 750 ms UV/OV grace; `VOLT:` log; dedicated `voltage_channel`; current-path `SENSOR_FAULT` immediate; voltage-path debounce 3/1 s; jam skips `SENSOR_FAULT`; inrush `start_current`/`icd_ms` |
 | NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes; stall must exceed In/steps; cooling ≤ 86400 s; AP-password auth_pass restored to `mps500`; manual `ch0`–`ch2` or Auto; `voltage_channel` |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
-| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`); Add/Edit `ch0`–`ch2` + `vch` dropdowns |
+| Web dashboard | `web.cpp`, `web_html.h` | done — themed login, session cookie, live DC V, power + session energy, AC/DC form, stall-recovery checkbox, jam indicator; `s_json` 8192 B; `/api/motor/add`; Start gate via `protectionCanStart()`; log page uses SD or 32-entry RAM ring (`ram_only`); Add/Edit `ch0`–`ch2` + `vch` dropdowns + `startcur`/`icd`; Export CSV falls back to RAM ring |
 | Local panel | `ui.cpp`, `ui.h`, `ui_icons.h` | done — `uiTask` core 0; SH1106 on Wire; KY-040 on 47/46/3; WS2812 on GPIO 48; 3-frame status icons; boot splash, Home, Per-motor, Fault Log, Diagnostics, Firmware Info, Network Info; `toneBack()` |
 | Sketch entry | `MotorProtection.ino` | done — relay GPIOs driven de-energized first (HIGH for active-LOW default); mutex/queue init (`voltageI2cMutexInit` / `buzzerMutexInit` / `motorStoreMutexInit` / `protectionMutexInit` / `webMutexInit`) runs before any `begin()`; `uiBegin()` starts `uiTask` only after those handles exist |
 
@@ -115,7 +115,7 @@ User-facing guide: `docs/USER_MANUAL.md`.
 
 ```
 MotorProtection/voltage.cpp   i2cInitOnce, voltageReprobe, sample, s_i2c_mu
-MotorProtection/voltage.h     VoltageSample, voltageReprobe, i2cLock/i2cUnlock
+MotorProtection/voltage.h     VoltageSample, VoltageDiagnostic, voltageReprobe, i2cLock/i2cUnlock
 MotorProtection/protection.cpp I²t/stall/jam release/UV/OV/power; protectionCanStart, 32-entry trip ring
 MotorProtection/ui.cpp        uiTask: OLED + encoder + WS2812 LED, boot splash + six screens
 MotorProtection/ui.h          UiBootStage, uiBegin/uiTask/uiBootStage/uiBootNote
@@ -131,7 +131,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 
 - Arduino IDE (not PlatformIO, not ESP-IDF)
 - Auth: themed login page + session cookie; default `mps` / `mps500` (was HTTP Basic Auth; user requested custom page)
-- Sensor fault = trip immediately (not latch, not alarm-only)
+- Sensor fault = trip (not latch, not alarm-only). Current-path `SENSOR_FAULT` is immediate; DC voltage-path `SENSOR_FAULT` is 3 consecutive faults in 1 s; both skipped while `jam_phase != JAM_IDLE`
 - ACS712-30A 66 mV/A
 - Relay default active-LOW, OFF=HIGH
 - Mains frequency selectable per motor
@@ -162,7 +162,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Power/energy are RAM only in `MotorRuntime`; no NVS write. Energy resets on Start and reboot
 - Jam release: `JAM_RELEASE_MAX = 4`, `JAM_RELEASE_OFF_MS = 300`, `JAM_RELEASE_WAIT_MS = 500`, `JAM_RELEASE_MIN_RUN_MS = 500`; no user-configurable timing; default `stall_recovery = 0`
 - AC power is apparent `VA` at rated V; power factor is not measurable and must never be shown as `W`
-- I²C SDA/SCL = GPIO 14 / 42; ADS1115 data rate 250 SPS; UV/OV grace 750 ms after DC Start; 4-sample ADS average then 0.9/0.1 LPF on `Vbus`
+- I²C SDA/SCL = GPIO 14 / 42; ADS1115 data rate 128 SPS; conversion wait 10 ms then poll to 35 ms; UV/OV grace 750 ms after DC Start; 4-sample ADS average then 0.9/0.1 LPF on `Vbus`
 - NVS schema 4; flashing this build drops a v1/v2/v3 motor blob (size/schema mismatch → empty list)
 - DC `voltage_channel` is 0–7 or `VCH_SAME` (0xFF = same ADS tap as current CH0); AC forces `VCH_SAME`
 - Buzzer frequencies as named functions in the design spec (1 kHz fault, short chirps)
@@ -208,9 +208,9 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - GPIO 19 is USB D-. Assigning it as encoder input crashed the board and broke serial. Moved ENC_SW to GPIO 3 (strapping-safe: JTAG source, does not affect boot mode or flash voltage; KY-040 pull-up holds it HIGH at boot).
 - `uiBegin()` starts `uiTask`, which calls `protectionSnapshot()` within 160 ms. Create `s_mu` / `s_i2c_mu` / motor-store / buzzer / web mutexes (and protection queues) before any `begin()`. Do not take those handles until `*MutexInit()` has run.
 - `uiTask` is not on the Task WDT; only the protection task is.
-- `SENSOR_FAULT` is suppressed during stall — a stalled motor is low-resistance and the voltage sensor can momentarily read out of range before the stall trip is recognized.
-- `SENSOR_FAULT` requires 3 consecutive faults within 1 second — single glitches are ignored instead of tripping the motor.
-- Sensor faults are suppressed during jam release — the motor is intentionally pulsed and readings are temporarily abnormal. `processJamRelease` determines the outcome.
+- Current-path `SENSOR_FAULT` (stuck ADC, Vadc outside `[0.05, 3.05]` V, |I| > 40 A) trips on that sample while `jam_phase == JAM_IDLE` and is checked before stall.
+- Voltage-path `SENSOR_FAULT` (missing ADS, I²C timeout, `|Vadc| > 4` V, `|Vbus| > 55` V) requires 3 consecutive faults within 1 s; a single voltage glitch is ignored.
+- All sensor-fault checks are skipped while `jam_phase != JAM_IDLE`. A stalled/pulsed motor is low-resistance and voltage/current readings can be temporarily abnormal; `processJamRelease` determines the outcome.
 - Inrush current protection: configurable `start_current` and `icd_ms` suppress startup stall false trips while the motor is still accelerating.
 - Clear Logs now clears both SD and RAM ring; if either succeeds, the button returns ok.
 - OLED rebuilds motor order every UI refresh (160 ms); motor add/edit/delete from web dashboard appears on panel without reboot.
@@ -232,18 +232,18 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 ## Changelog
 
 - 2026-09-23 — Jam-release sensor suppression: all sensor-fault checks are skipped while `jam_phase != JAM_IDLE`, so a pulsed/stalled motor cannot trip `SENSOR_FAULT` prematurely. The jam state resets the stale debounce counter before the next recovery attempt, and `processJamRelease` still decides success or exhaustion.
-- 2026-09-22 — Stall suppression and startup inrush protection: `SENSOR_FAULT` is suppressed when a motor is already stalled, a true sensor fault requires 3 consecutive faults within 1 s, and `start_current` + `icd_ms` override the effective stall threshold during the startup window. Export CSV also falls back to the RAM ring when no SD card is mounted, and jam recovery is capped at 4 attempts.
+- 2026-09-22 — Stall suppression and startup inrush protection: current-path `SENSOR_FAULT` is immediate and checked before stall; voltage-path `SENSOR_FAULT` needs 3 consecutive faults within 1 s; `start_current` + `icd_ms` override the effective stall threshold during the startup window. Export CSV also falls back to the RAM ring when no SD card is mounted, and jam recovery is capped at 4 attempts.
 - 2026-09-22 — I²C contention and swapped bench wiring review: ADS1115 logical map is CH0–3→0x49 and CH4–7→0x48; voltage reads use 128 SPS with mutex-free conversion waits and a 35 ms deadline; protection readiness and boot/docs diagnostics updated.
 - 2026-09-22 — Added project-local voltage diagnostics (four raw ADS samples, logical channel/address/AIN, calibration values, validity, and timeout counters) on `SENSOR_FAULT`; no external libraries modified.
 
-- 2026-09-20 — Local OLED + encoder panel: `ui.cpp`/`ui.h`/`ui_icons.h` `uiTask` on core 0, SH1106 on `Wire1` (GPIO 25/47), KY-040 on 22/23/24, boot splash + Home/Per-motor/Fault Log/Diagnostics/Firmware/Network screens, `toneBack()`, shared `protectionCanStart()` gate, non-destructive `protectionCopyLog()` ring, cross-core buzzer mutex, U8g2 dependency.
-- 2026-09-21 — Pin/bus correction: GPIO 22–25 do not exist on ESP32-S3. Encoder CLK/DT/SW moved to 47/48/46 (GPIO 46 is ENC_SW only). OLED shares the ADS1115 I²C bus (GPIO 14/42) via `U8G2_SH1106_128X64_NONAME_F_HW_I2C`; `s_i2c_mu` serializes every Wire transaction. Dropped `OLED_SDA_PIN`/`OLED_SCL_PIN`/`Wire1`.
-- 2026-09-21 — Encoder off GPIO 48 (onboard WS2812): CLK 47 / DT 46 / SW 19. NeoPixel status LED on GPIO 48 (worst-state Fault > Running > Cooling > Stopped; thermal gradient while Running; ~2 Hz fault/cooling flash). 3-frame RUNNING/FAULT/COOLING icons (~450 ms). Centered splash. Adafruit NeoPixel library.
-- 2026-09-21 — ENC_SW off GPIO 19 (USB D-): native USB CDC is the serial path on this board; `pinMode(19, INPUT)` crashed boot and broke Serial. Moved ENC_SW to GPIO 3 (strapping-safe JTAG source; KY-040 pull-up holds HIGH at boot). Early `Serial.println("MPS-505 boot...")` in `setup()`.
+- 2026-09-20 — Local OLED + encoder panel: `ui.cpp`/`ui.h`/`ui_icons.h` `uiTask` on core 0, SH1106 on shared ADS1115 `Wire` (GPIO 14/42), KY-040 CLK 47 / DT 46 / SW 3, onboard WS2812 on GPIO 48, boot splash + Home/Per-motor/Fault Log/Diagnostics/Firmware/Network screens, `toneBack()`, shared `protectionCanStart()` gate, non-destructive `protectionCopyLog()` ring, cross-core buzzer mutex, U8g2 + NeoPixel.
+- 2026-09-21 — Pin/bus lock: GPIO 22–25 do not exist on ESP32-S3. Encoder is CLK 47 / DT 46 / SW 3. OLED shares the ADS1115 I²C bus (GPIO 14/42) via `U8G2_SH1106_128X64_NONAME_F_HW_I2C`; `s_i2c_mu` serializes every Wire transaction. No `OLED_SDA_PIN`/`OLED_SCL_PIN`/`Wire1`.
+- 2026-09-21 — GPIO 48 is the onboard WS2812 (not encoder DT). NeoPixel status LED: worst-state Fault > Running > Cooling > Stopped; thermal gradient while Running; ~2 Hz fault/cooling flash. 3-frame RUNNING/FAULT/COOLING icons (~450 ms). Centered splash.
+- 2026-09-21 — ENC_SW is GPIO 3 (strapping-safe JTAG source; KY-040 pull-up holds HIGH at boot). GPIO 19 is USB D- and must never be used as GPIO. Early `Serial.println("MPS-505 boot...")` in `setup()`.
 - 2026-09-21 — Boot crash `xQueueSemaphoreTake` on NULL mutex: `uiBegin()` started `uiTask` before `protectionBegin()` created `s_mu`. Mutex/queue create now runs at the top of `setup()`; `init: …` Serial lines between each begin.
-- 2026-09-21 — Optional per-motor stall recovery (jam release): 4× 300/500 ms pulses after 500 ms of Running; I²t and SENSOR stay live; stall / UV / OV / NO_CURRENT skipped while `jam_phase != IDLE`. 32-entry RAM fault ring feeds the web log when SD is missing (`ram_only`). NVS schema 3.
+- 2026-09-21 — Optional per-motor stall recovery (jam release): 4× 300/500 ms pulses after 500 ms of Running; I²t stays live; stall / UV / OV / NO_CURRENT / SENSOR_FAULT skipped while `jam_phase != IDLE`. 32-entry RAM fault ring feeds the web log when SD is missing (`ram_only`). Live NVS schema is 4.
 - 2026-09-21 — Clear Logs clears SD and RAM ring (`protectionClearLog`); OLED rebuilds motor order every 160 ms refresh; web log already served RAM with `ram_only` when SD missing.
-- 2026-09-21 — DC voltage filter against false UV/OV: 4-sample ADS average, 0.9/0.1 LPF, `UV_GRACE_MS` 750, `VOLT:` Serial. Relays OUTPUT LOW at the top of `setup()` before Serial.
+- 2026-09-21 — DC voltage filter against false UV/OV: 4-sample ADS average, 0.9/0.1 LPF, `UV_GRACE_MS` 750, `VOLT:` Serial. Relays OUTPUT HIGH at the top of `setup()` before Serial (active-LOW default).
 - 2026-09-22 — User-selectable current channels (`ch0`–`ch2`, Auto = lowest free) and per-motor DC voltage sense channel (`vch` / `voltage_channel`, `VCH_SAME` = same as current CH0). NVS schema 4.
 - 2026-09-22 — Default relay polarity reversed to active-LOW (`RELAY_ACTIVE_HIGH_DEFAULT = 0`). Boot fail-safe drives GPIO HIGH (OFF). Add/Edit default is Active-LOW.
 

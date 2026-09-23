@@ -6,7 +6,7 @@ Date: 2026-09-22
 
 1. `readAdcVolts()` released `s_i2c_mu` between conversion-complete polls, but the 20 ms deadline was too close to a complete SH1106 transfer. A full 128x64 frame is 1024 data bytes. At 400 kHz, the wire time is approximately `(1024 data bytes + 8 control/address bytes) * 9 bits / 400000 = 23.2 ms`, before start/stop and command overhead. A frame therefore can occupy the mutex for roughly 23–25 ms. `conversionComplete()` reads the ADS config register over I2C, so a poll delayed behind `sendBuffer()` could time out and return `present=0`; `applySample()` then trips `FT_SENSOR`.
 2. Logical voltage readiness in `protection.cpp` used the old chip split even after the bench wiring was identified as swapped.
-3. 250 SPS was unnecessary for the DC protection loop and increased conversion polling/bus activity.
+3. 250 SPS was unnecessary for the DC protection loop and increased conversion polling/bus activity. Live firmware uses 128 SPS.
 
 The contention was not a permanent priority inversion: the mutex is a FreeRTOS mutex with priority inheritance, and the tasks run on different cores. The protection task can still wait for the bounded OLED transaction, however. The timeout race was real.
 
@@ -29,7 +29,7 @@ The contention was not a permanent priority inversion: the mutex is a FreeRTOS m
 
 ## SENSOR_FAULT trace
 
-`applySample()` sets `FT_SENSOR` for current out-of-range/stuck samples, or for a DC `VoltageSample` that is absent/faulted. `voltageSample()` returns `present=0` when every `readAdcVolts()` attempt fails. Before this change, an ADS conversion-complete poll could miss its 20 ms deadline while the OLED held the mutex. That path is now mitigated by waiting for the 128 SPS conversion with the bus released and using a 35 ms deadline. Electrical faults remain intentionally trip-worthy.
+`applySample()` sets `FT_SENSOR` for current out-of-range/stuck samples on that window (while `jam_phase == JAM_IDLE`), or for a DC `VoltageSample` that is absent/faulted after 3 consecutive voltage faults within 1 s. `voltageSample()` returns `present=0` when every `readAdcVolts()` attempt fails. Before this change, an ADS conversion-complete poll could miss its 20 ms deadline while the OLED held the mutex. That path is now mitigated by waiting for the 128 SPS conversion with the bus released and using a 35 ms deadline. Remaining voltage-path timeouts still count toward the 3/1 s debounce. Electrical faults remain intentionally trip-worthy. All sensor-fault checks are skipped while jam-release pulses run.
 
 ## Channel mapping
 

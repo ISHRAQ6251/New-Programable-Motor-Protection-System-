@@ -79,7 +79,7 @@ I2C: diag ads_ok=[1,0] vcal=[1,1,1,1,0,0,0,0]
 
 ## Conversion timeout
 
-`readAdcVolts()` starts a conversion under the mutex, releases the bus while the ADS converts, then reacquires it only for short status/result reads. At 128 SPS the nominal conversion is 7.8 ms; firmware waits 10 ms before polling and allows 35 ms for completion. Timeout → that sample is treated as missing (`present=0`); a running DC motor then trips `SENSOR_FAULT`.
+`readAdcVolts()` starts a conversion under the mutex, releases the bus while the ADS converts, then reacquires it only for short status/result reads. At 128 SPS the nominal conversion is 7.8 ms; firmware waits 10 ms before polling and allows 35 ms for completion. Timeout → that sample is treated as missing (`present=0`). A running DC motor then counts a voltage-path sensor fault; `SENSOR_FAULT` trips only after 3 consecutive voltage faults within 1 s (skipped while jam-release pulses run).
 
 When a DC `SENSOR_FAULT` occurs, the firmware prints `VOLT_DIAG` lines containing the
 logical channel, ADS address/AIN, averaged ADC voltage, calibration zero, bus voltage,

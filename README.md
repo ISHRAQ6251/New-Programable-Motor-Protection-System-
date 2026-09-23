@@ -15,7 +15,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - Classic **I²t energy** trip curve (not inverse-time interpolation)
 - Independent **stall** trip on the next RMS window; optional per-motor **stall recovery** (jam release: 4 short power pulses)
 - **Inrush current protection**: configurable starting-current + ICD suppresses startup stall false trips during the first few seconds after Start
-- **Sensor-fault** trip (stuck ADC, out-of-range Vadc, |I| > 40 A, or missing ADS1115 on a DC channel); a real fault requires 3 consecutive faults within 1 s
+- **Sensor-fault** trip: current path (stuck ADC, out-of-range Vadc, |I| > 40 A) trips on that sample; DC voltage path (missing ADS1115 / I²C timeout / |Vadc| > 4 V / |Vbus| > 55 V) needs 3 consecutive faults within 1 s; both skipped during jam release
 - **No-current** trip after 2 s Running below 5 % of In (broken sense wire / open winding)
 - Live **DC voltage** with optional undervoltage / overvoltage trip (0 = that trip disabled; 750 ms grace after Start; 4-sample average + 0.9/0.1 LPF)
 - **User-selectable current channels** on Add/Edit (Auto or pin CH0–CH7); DC motors also pick a **voltage sense channel** (same as current, or a dedicated ADS tap)
@@ -73,9 +73,9 @@ E_trip  = (k × In)² × t_trip
 
 Active step = highest `k` with `I_rms >= k × In`. Trip **I2T** when `E >= E_trip`. Below pickup, `E` decays toward 0 over the motor cooling time.
 
-Stall: `I_rms >= stall_amps` on the next window → trip **STALL** immediately, unless stall recovery is enabled (then up to 4× 300/500 ms jam-release pulses after 500 ms of Running). During the configured inrush window, the effective stall threshold may be raised using the per-motor starting-current setting.
+Stall: `I_rms >= stall_amps` on the next window → trip **STALL** immediately, unless stall recovery is enabled (then up to 4× 300/500 ms jam-release pulses after 500 ms of Running). During the configured inrush window (`icd_ms` > 0 and `start_current` > 0), the effective stall threshold is `start_current`. While jam pulses run, skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t.
 
-Sensor fault → trip **SENSOR_FAULT** only after 3 consecutive faults within 1 s; a single spike or glitch is ignored. A stalled motor is treated as a stall-first condition so the voltage fault does not mask the correct trip. Auto-restart still applies.
+Sensor fault, while not in jam: current path (stuck ADC, Vadc outside 0.05–3.05 V, |I| > 40 A) trips **SENSOR_FAULT** on that sample; DC voltage path trips only after 3 consecutive voltage faults within 1 s. Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT`, `OV`, `UV`, `I2T`. Auto-restart still applies.
 
 Running and max phase current `< 0.05 × In` for 2 s → trip **NO_CURRENT**.
 
@@ -94,7 +94,7 @@ Power: DC `P = Vdc × I_dc` (`W`); AC 1-phase `S = V_rated × I_rms` (`VA`); AC 
 | Stall recovery attempts | 0–4 | `JAM_RELEASE_MAX = 4` |
 | Inrush duration | 0–10000 ms | `icd_ms`, 0 disables the feature |
 | Inrush starting current | 0–40 A | `start_current`, 0 disables the feature |
-| Sensor-fault debounce | 3 samples in 1 s | Single spikes are ignored |
+| Sensor-fault debounce | voltage path 3/1 s; current path immediate | skipped while jam-release pulses run |
 
 ## Flash with Arduino IDE
 
@@ -145,8 +145,8 @@ MotorProtection/          Arduino IDE sketch (firmware)
   relays.cpp              Polarity-aware coil drive
   buzzer.cpp              Non-blocking LEDC tones
   sensing.cpp             Current: calibrate + true RMS / DC mean
-  voltage.cpp / voltage.h DC voltage: 2× ADS1115, i2cInitOnce, voltageReprobe
-  protection.cpp          I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power
+  voltage.cpp / voltage.h DC voltage: 2× ADS1115, i2cInitOnce, voltageReprobe, 128 SPS, VOLT_DIAG
+  protection.cpp          I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / inrush / power
   motor_store.cpp         NVS blob + dashboard login credentials
   net_ap.cpp              SoftAP MPS-505
   sd_log.cpp              Optional /faults.csv
@@ -169,7 +169,9 @@ LICENSE                   MIT
 | UV/OV grace | 750 ms after DC Start |
 | No-current trip | 2 s below 0.05 × In while Running |
 | Auto-restart cap | 3 consecutive trips; 10 min clean run clears |
-| Stall recovery attempts | 3 (fixed) |
+| Stall recovery attempts | 4 (fixed) |
+| Inrush duration / start current | 0–10000 ms / 0–40 A (`0` disables) |
+| Sensor-fault debounce | voltage path: 3 faults in 1 s; current path: immediate |
 | RAM fault ring | 32 entries (lost on reboot) |
 | ADC | 12-bit, 11 dB, ADC1 only |
 | DC divider | R1=150 kΩ / R2=10 kΩ, scale 16 |
@@ -197,11 +199,10 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - DC voltage filter: 4-sample ADS average, 0.9/0.1 LPF, 750 ms UV/OV grace, `VOLT:` Serial
 - User-selectable current channels (`ch0`–`ch2`) and DC voltage sense channel (`vch`) on Add/Edit
 - Default relay polarity reversed to active-LOW (boot GPIO HIGH = OFF)
-- Local panel: SH1106 128x64 on `Wire1` (GPIO 25/47) + KY-040 encoder on 22/23/24; shared `protectionCanStart()` gate; `toneBack()`; U8g2 (2026-09-20)
-- 2026-09-21 pin/bus correction: encoder 47/48/46; OLED shares ADS1115 `Wire` 14/42; `s_i2c_mu` serializes every Wire transaction; GPIO 22–25 are not physical pins
-- 2026-09-21 encoder off GPIO 48: CLK 47 / DT 46 / SW 19; NeoPixel status LED on GPIO 48; 3-frame status icons
-- 2026-09-21 ENC_SW off GPIO 19 (USB D-) to GPIO 3; early `MPS-505 boot...` Serial print
-- 2026-09-21 stall recovery (4× 300/500 ms jam-release pulses) and 32-entry RAM fault ring (`ram_only` log page)
+- Local panel: SH1106 128x64 on shared ADS1115 `Wire` (GPIO 14/42) + KY-040 encoder CLK 47 / DT 46 / SW 3; onboard WS2812 on GPIO 48; shared `protectionCanStart()` gate; `toneBack()`; U8g2
+- ADS1115 128 SPS, 35 ms conversion timeout, CH0–3→0x49 / CH4–7→0x48; `VOLT_DIAG` on `SENSOR_FAULT`
+- Inrush: `start_current` + `icd_ms` (0 disables). Current-path `SENSOR_FAULT` is immediate; voltage-path needs 3 faults in 1 s; jam pulses skip `SENSOR_FAULT`
+- Log Export downloads SD CSV when mounted, else the 32-entry RAM ring as `faults.csv`
 
 ## License
 

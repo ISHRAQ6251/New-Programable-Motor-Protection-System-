@@ -1,7 +1,7 @@
 # ESP32-S3 Programmable Motor Protection Firmware — Design
 
-Date: 2026-09-02 (updated 2026-09-13 for the DC-voltage / rated-AC extension, 2026-09-14 for the power display / logging extension, 2026-09-21 for stall recovery / RAM fault ring)
-Status: Approved. v1 + DC voltage / AC rated-V field + power display + stall recovery (jam release) + 32-entry RAM fault ring implemented in `MotorProtection/` (not compiled in this environment; committed). Focused delta specs: `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` and `docs/superpowers/specs/2026-09-14-power-display-design.md`.
+Date: 2026-09-02 (updated to live firmware as of `700db56`: DC voltage, power, stall recovery, RAM log, channel select, inrush, SENSOR_FAULT split, 128 SPS)
+Status: Approved. Implemented in `MotorProtection/` (not compiled in this environment). Focused delta specs: `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md`, `docs/superpowers/specs/2026-09-14-power-display-design.md`, `docs/superpowers/specs/2026-09-20-oled-encoder-local-panel-design.md`.
 Scope: ESP32-S3 firmware only. Sensors, relays, SD breakout, voltage taps, and buzzer are treated as already wired.
 
 ## 1. Purpose
@@ -16,7 +16,7 @@ Correctness and code clarity matter more than polish. This is a university engin
 |---|---|
 | Toolchain | Arduino IDE sketch (folder + `.ino` + `.h`/`.cpp` tabs) |
 | Board | ESP32-S3-N16R8 (16 MB flash, 8 MB octal PSRAM) |
-| Architecture | Dual-task: high-priority protection task + `loop()` service path |
+| Architecture | Three FreeRTOS tasks: protection + `loop()` on core 1, Wi-Fi + `uiTask` on core 0 |
 | Wi-Fi | SoftAP only. No STA, no WiFiManager, no DDNS, no captive portal |
 | AP credentials | SSID `MPS-505`, password `mps50005`, IP `192.168.4.1` |
 | Web auth | Themed `/login` page + HttpOnly session cookie, default `mps` / `mps500`, stored in NVS |
@@ -32,7 +32,7 @@ Correctness and code clarity matter more than polish. This is a university engin
 | I²t model | Classic energy: `E += I_rms² × dt`, trip vs `(k×In)² × t_trip` |
 | Below pickup | Decay `E` toward 0 over that motor's cooling time |
 | Stall | Immediate on the next RMS window, independent of I²t |
-| Sensor fault | Trip immediately (`SENSOR_FAULT`). Auto-restart still applies |
+| Sensor fault | Current path trips on that sample; DC voltage path needs 3 consecutive faults in 1 s. Both skipped while jam-release pulses run. Auto-restart still applies |
 | Protection steps | Max 8 per motor |
 | Max motors / channels | 8 / 8 |
 | SD | Fault log only. Missing SD does not affect protection or dashboard |
@@ -56,7 +56,7 @@ Arduino `setup()`/`loop()` plus FreeRTOS.
   SoftAP          | web server       | --> SD log writes
                   | (core 1, prio 1) |
                   +------------------+
-         WiFi/tcpip on core 0
+         WiFi/tcpip + uiTask (OLED/encoder/WS2812) on core 0
 ```
 
 Rules:
@@ -80,7 +80,8 @@ Arduino IDE sketch folder `MotorProtection/`:
 | `motor_store.h/.cpp` | NVS load/save of motor list + auth credentials; field validation |
 | `sensing.h/.cpp` | Current ADC, zero calibration, RMS / DC average |
 | `voltage.h/.cpp` | 2× ADS1115 DC voltage: re-bind Wire, calibrate zeros, sample |
-| `protection.h/.cpp` | I²t, stall, UV/OV, cooling, motor state machine |
+| `protection.h/.cpp` | I²t, stall, jam release, UV/OV, sensor-fault, NO_CURRENT, inrush, power, motor state machine |
+| `ui.h/.cpp` / `ui_icons.h` | Local SH1106 + KY-040 + WS2812 panel (`uiTask` core 0) |
 | `relays.h/.cpp` | Polarity-aware coil drive, boot fail-safe OFF |
 | `buzzer.h/.cpp` | Named non-blocking LEDC tunes |
 | `sd_log.h/.cpp` | Optional CSV log; safe no-op if unmounted |
@@ -135,7 +136,7 @@ Analog path (DC voltage):
 
 - 2× ADS1115 on I²C: 0x48 (ADDR→GND) = CH4–7 AIN0–3; 0x49 (ADDR→VDD) = CH0–3 AIN0–3
 - Per channel divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~0–3.13 V
-- Gain `GAIN_ONE` (±4.096 V), data rate 250 SPS, set explicitly after `begin()`
+- Gain `GAIN_ONE` (±4.096 V), data rate 128 SPS, set explicitly after `begin()`. Conversion wait 10 ms with the I²C mutex released, then poll to 35 ms.
 - `V_bus = (V_adc - v_zero) * 16.0`; `v_zero` is calibrated with the relay open, never assumed 0 V
 - Tap is the motor terminal **downstream of that channel's relay**, not the shared bus
 - Adafruit BusIO's `ads.begin()` calls `Wire.begin()` with no pins; firmware re-binds GPIO 14/42 before and after each `begin()`
@@ -150,7 +151,7 @@ Relays:
 
 ### 5.1 Motor record (NVS, not SD)
 
-Fixed-size struct, packed, versioned (`NVS_SCHEMA = 3`). A size/schema mismatch (e.g. an old v1/v2 blob) starts empty.
+Fixed-size struct, packed, versioned (`NVS_SCHEMA = 4`). A size/schema mismatch (e.g. an old v1/v2/v3 blob) starts empty.
 
 ```
 MotorRecord
@@ -160,21 +161,24 @@ MotorRecord
   uint8_t  channels[3]          // channel indices 0..7; unused = 0xFF
   uint8_t  is_ac                // 1 = AC, 0 = DC
   uint8_t  mains_hz             // 50 or 60; ignored if DC
-  float    rated_ac_v           // AC nameplate only; 0 for DC; not a trip input
   float    in_amps              // operating current
   float    stall_amps
+  float    start_current        // inrush stall threshold; 0 = disabled
+  uint32_t icd_ms               // inrush window after Start; 0 = disabled
   float    cooling_s
   uint8_t  auto_restart         // 0/1
-  uint8_t  stall_recovery       // 0/1 jam release; default 0
   uint8_t  relay_active_high[3] // 0 = active-LOW (default)
   uint8_t  step_count           // 1..8
   float    step_k[8]            // multiplier of In
   float    step_t_s[8]          // trip time at that multiple
+  float    rated_ac_v           // AC nameplate only; 0 for DC; not a trip input
   float    uv_volts             // DC undervoltage; 0 = disabled; 0 for AC
   float    ov_volts             // DC overvoltage; 0 = disabled; 0 for AC
+  uint8_t  stall_recovery       // 0/1 jam release; default 0
+  uint8_t  voltage_channel      // 0..7 or VCH_SAME 0xFF (same as current CH0)
 ```
 
-Validation: AC requires `mains_hz` 50/60 and `rated_ac_v` in 0.1–1000. DC requires `uv_volts`, `ov_volts` ≥ 0 and ≤ 55, and `ov_volts > uv_volts` when both > 0. Cross-field values are zeroed on add/edit (AC stores no UV/OV; DC stores no rated AC).
+Validation: AC requires `mains_hz` 50/60 and `rated_ac_v` in 0.1–1000. DC requires `uv_volts`, `ov_volts` ≥ 0 and ≤ 55, and `ov_volts > uv_volts` when both > 0. If `start_current` > 0 it must be ≥ In and ≤ 40 A; `icd_ms` must be 0..10000. Cross-field values are zeroed on add/edit (AC stores no UV/OV and forces `VCH_SAME`; DC stores no rated AC).
 
 NVS namespace `mps`. Keys:
 
@@ -188,7 +192,7 @@ Corrupt, missing, or wrong-schema blob → empty motor list, Serial warning, do 
 
 Per channel: `zero_adc`, `last_rms`, `energy_a2s` (I²t accumulator), `v_zero`, `last_v`, `v_calibrated`, last sample ticks.
 
-Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type, `power` (latest `W` or `VA`), `energy` (`Wh` / `VAh`, RAM only), jam-release `jam_count` / `jam_phase` / `jam_deadline_ms`. Power/energy update once per protection pass, show `0.0` when not Running, and are never written to NVS. See `2026-09-14-power-display-design.md`.
+Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type, `power` (latest `W` or `VA`), `energy` (`Wh` / `VAh`, RAM only), voltage-path sensor-fault debounce `sensor_fault_count` / `sensor_fault_first_ms`, jam-release `jam_count` / `jam_phase` / `jam_deadline_ms`. Power/energy update once per protection pass, show `0.0` when not Running, and are never written to NVS. See `2026-09-14-power-display-design.md`.
 
 Dashboard thermal % for a motor is the max of its channels' `100 * E / E_trip`. For 3-phase that is the hottest phase.
 
@@ -198,7 +202,7 @@ Dashboard is one row per motor, never per channel. A 3-phase motor is one record
 
 ### 5.3 Channel allocation
 
-Add-motor asks phase count first. Firmware allocates 1 or 3 currently free channels (lowest indices). If not enough free channels, the API returns an error and the UI shows it. Channels are released on delete.
+Add-motor asks phase count first, then current channels (`ch0`/`ch1`/`ch2`: Auto = lowest free, or pin 0–7). DC also picks `voltage_channel` (`VCH_SAME` or 0–7). If not enough free current channels, the API returns an error and the UI shows it. Channels are released on delete.
 
 Delete is allowed only from `Stopped` or `Fault`, never from `Running` or `Cooling`.
 
@@ -237,35 +241,36 @@ Thermal load % (dashboard): `0` below pickup; otherwise `100 * E / E_trip` of th
 
 ### 6.3 Stall
 
-If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately, unless `stall_recovery` is enabled. No I²t involvement on the stall path.
+If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately, unless `stall_recovery` is enabled. During the inrush window (`icd_ms` > 0 and `start_current` > 0) the effective stall threshold is `start_current`. No I²t involvement on the stall path.
 
-Optional jam release (fixed constants, not user-timed): after `JAM_RELEASE_MIN_RUN_MS` (500) of Running, de-energize `JAM_RELEASE_OFF_MS` (300), re-energize, wait `JAM_RELEASE_WAIT_MS` (500), re-check. Up to `JAM_RELEASE_MAX` (4) pulses. Success zeros `jam_count` only (not the auto-restart counter). Exhaustion trips `STALL` and Cooling as usual. While `jam_phase != JAM_IDLE`: skip stall / UV / OV / `NO_CURRENT`; keep I²t accumulation and `SENSOR_FAULT`. No extra grace after jam ends.
+Optional jam release (fixed constants, not user-timed): after `JAM_RELEASE_MIN_RUN_MS` (500) of Running, de-energize `JAM_RELEASE_OFF_MS` (300), re-energize, wait `JAM_RELEASE_WAIT_MS` (500), re-check. Up to `JAM_RELEASE_MAX` (4) pulses. Success zeros `jam_count` only (not the auto-restart counter). Exhaustion trips `STALL` and Cooling as usual. While `jam_phase != JAM_IDLE`: skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t accumulation. No extra grace after jam ends.
 
 ### 6.4 Sensor fault
 
-Trip `SENSOR_FAULT` immediately if, on an assigned channel:
+While `jam_phase == JAM_IDLE`, on an assigned channel:
 
-- ADC reading is stuck (unchanged across a full window within 1 LSB) while the motor is Running (AC or DC), or
-- Mean Vadc is outside `[0.05 V, 3.05 V]` (open/shorted divider), or
-- Computed |I_rms| is physically implausible (> 40 A on a 30 A sensor)
-- DC voltage path (Running DC only): the ADS1115 for that channel is missing / I²C fails, `|V_adc| > 4.0 V`, or `|V_bus| > 55 V`
+- Current path (checked before stall): stuck ADC (unchanged across a full window within 1 LSB) while Running (AC or DC), mean Vadc outside `[0.05 V, 3.05 V]`, or |I_rms| > 40 A → trip `SENSOR_FAULT` on that sample.
+- DC voltage path (Running DC only, after stall): ADS1115 missing / I²C fail / `present=0`, `|V_adc| > 4.0 V`, or `|V_bus| > 55 V` → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s. A single voltage glitch is ignored. On trip, Serial prints `VOLT_DIAG` / `VOLT_DIAG_SAMPLE` / `VOLT_DIAG_HISTORY`.
 
-Same trip path as other faults (relays off, tone, log, cooling). Auto-restart still applies.
+Same trip path as other faults (relays off, tone, log, cooling). Auto-restart still applies. Both paths are skipped while `jam_phase != JAM_IDLE`.
 
 Running and every phase `I_rms < 0.05 × In` for 2 s → `NO_CURRENT` (broken sense wire, open winding, or a relay that never closed).
 
 ### 6.5 DC undervoltage / overvoltage
 
-DC only, after 250 ms of `Running` (relay just closed): `V_bus < uv_volts` when `uv_volts > 0` → `UNDERVOLT`; `V_bus > ov_volts` when `ov_volts > 0` → `OVERVOLT`. `0` disables that trip independently. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared.
+DC only, after 750 ms of `Running` (relay just closed): 4-sample ADS average then 0.9/0.1 LPF on `Vbus`; `V_bus < uv_volts` when `uv_volts > 0` → `UNDERVOLT`; `V_bus > ov_volts` when `ov_volts > 0` → `OVERVOLT`. `0` disables that trip independently. Same Cooling / auto-restart / Reset as I²t. AC rated voltage is never compared. Serial `VOLT:` every 2 s while Running.
 
-Trip order within one sample window: `SENSOR`, `STALL`, `OV`, `UV`, `I2T`.
+Trip order within one sample window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT` (debounced), `OV`, `UV`, `I2T`.
 
 ### 6.6 State machine
 
 ```
 Stopped --Start--> Running
 Running --Stop---> Stopped
-Running --trip---> Cooling     (relays OFF, fault tune, SD log)
+Running --stall, recovery On, after 500 ms run--> jam pulses (4x 300/500 ms)
+jam recovered --> Running (jam_count=0; auto-restart counter unchanged)
+jam exhausted --> Cooling as STALL
+Running --trip---> Cooling     (relays OFF, fault tone, SD log)
 Cooling --timer, auto_restart=1 and consecutive trips < 3--> Running
 Cooling --timer, auto_restart=0 or 3 consecutive trips--> Fault
 Cooling --Reset--> Stopped     (cancel auto-restart, buzzer off)
@@ -299,9 +304,9 @@ Themed `/login` page (same dark dashboard theme). Successful POST sets an HttpOn
 Desktop-only UI (wide table layout, not mobile-first). Four operator pages plus Security, same dashboard for any client on the AP:
 
 1. Dashboard — columns: channels, name, status, uptime, fault count, live RMS (3-phase shows three currents in one cell), live DC voltage (em dash for AC), power (true `W` for DC, apparent `VA` for AC) with session energy, thermal load % (hottest phase), last fault tag, Start/Stop, Reset (enabled in Fault or Cooling). A meta line shows ADS1115 ok/missing. Poll `GET /api/status` about once per second. See `2026-09-14-power-display-design.md`.
-2. Add motor — wizard: phase count → allocated channels shown → remaining fields including N then N× (k, t_trip). AC shows mains Hz + rated AC voltage; DC shows optional UV/OV (0 = off). Stall-recovery checkbox (jam release; default off).
+2. Add motor — phase count, then current-channel dropdowns (Auto or CH0–CH7), remaining fields including N then N× (k, t_trip). AC shows mains Hz + rated AC voltage; DC shows optional UV/OV (0 = off) and voltage-sense channel (`VCH_SAME` or 0–7). Stall-recovery checkbox (jam release; default off). Starting current + inrush duration (`0` disables).
 3. Edit / delete — same fields as add.
-4. Log — SD CSV when mounted; otherwise the 32-entry RAM ring with `ram_only` and a “RAM buffer only — logs lost on reboot” banner. Export CSV is SD-only. Clear empties the RAM ring always, and also rewrites the SD header when a card is mounted.
+4. Log — SD CSV when mounted; otherwise the 32-entry RAM ring with `ram_only` and a “RAM buffer only — logs lost on reboot” banner. Export always available: SD file when mounted, else newest-first RAM ring as `faults.csv`. Clear empties the RAM ring always, and also rewrites the SD header when a card is mounted.
 5. Security — change dashboard username/password.
 
 Implementation notes:
@@ -322,6 +327,7 @@ GPIO 21, LEDC, non-blocking. Protection queues a tone id; `loop()` advances the 
 | `toneMotorStarted()` | One rising chirp |
 | `toneMotorStopped()` | One falling chirp |
 | `toneClick()` | 20 ms tick |
+| `toneBack()` | Short two-note descending blip (panel long-press) |
 
 ## 9. SD logging
 
@@ -335,7 +341,7 @@ Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`, `NO_CURRENT`.
 
 3-phase current-at-fault is the RMS of the phase that crossed the threshold. `voltage_V` is the DC bus voltage at the fault (0 for AC motors). DC rows fill `power_W`, AC rows fill `power_VA`; the other stays blank. Older 4- or 5-column CSVs still parse.
 
-Clear log from UI truncates the file. Export is a download of the same CSV.
+Clear log from UI truncates the SD file (when mounted) and empties the RAM ring. Export downloads the SD CSV when mounted, otherwise the newest-first RAM ring as `faults.csv`.
 
 No motor configuration is ever stored on SD.
 
