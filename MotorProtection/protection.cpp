@@ -116,6 +116,43 @@ static void motorRelaysOn(int mi) {
   relaysMotorOn(s_motors[mi].channels, s_motors[mi].relay_active_high, s_motors[mi].phase_count);
 }
 
+static float effectiveStallThreshold(const MotorRecord *m, const MotorRuntime *rt, uint32_t now) {
+  float threshold = m->stall_amps;
+  if (m->icd_ms > 0u && m->start_current > 0.0f) {
+    const uint32_t age = now - rt->run_start_ms;
+    if (age < m->icd_ms) {
+      threshold = m->start_current;
+    }
+  }
+  return threshold;
+}
+
+static void resetSensorFaultDebounce(MotorRuntime *rt) {
+  if (!rt) {
+    return;
+  }
+  rt->sensor_fault_count = 0;
+  rt->sensor_fault_first_ms = 0;
+}
+
+static bool registerSensorFault(MotorRuntime *rt, uint32_t now) {
+  if (!rt) {
+    return false;
+  }
+  if (rt->sensor_fault_count == 0) {
+    rt->sensor_fault_first_ms = now;
+    rt->sensor_fault_count = 1;
+    return false;
+  }
+  if ((now - rt->sensor_fault_first_ms) <= SENSOR_FAULT_WINDOW_MS) {
+    rt->sensor_fault_count++;
+    return rt->sensor_fault_count >= SENSOR_FAULT_MIN_COUNT;
+  }
+  rt->sensor_fault_first_ms = now;
+  rt->sensor_fault_count = 1;
+  return false;
+}
+
 static void zeroEnergy(int mi) {
   for (int p = 0; p < s_motors[mi].phase_count; p++) {
     const uint8_t c = s_motors[mi].channels[p];
@@ -142,6 +179,7 @@ static void zeroEnergy(int mi) {
   s_rt[mi].jam_count = 0;
   s_rt[mi].jam_phase = JAM_IDLE;
   s_rt[mi].jam_deadline_ms = 0;
+  resetSensorFaultDebounce(&s_rt[mi]);
 }
 
 static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
@@ -172,13 +210,49 @@ static void trip(int mi, FaultType ft, float current_a, float voltage_v) {
   }
   Serial.printf("TRIP: motor=%s type=%s I=%.3f A V=%.3f\n",
                 s_motors[mi].name, ftn, (double)current_a, (double)voltage_v);
+  if (ft == FT_SENSOR) {
+    const uint8_t c = (mi >= 0 && mi < MAX_MOTORS)
+                        ? voltageChOf(&s_motors[mi])
+                        : CH_UNUSED;
+    VoltageDiagnostic d;
+    if (c < MAX_CHANNELS && voltageDiagnosticGet(c, &d)) {
+      Serial.printf("VOLT_DIAG: ms=%lu ch=%u chip=%u addr=0x%02X ain=%u "
+                    "present=%u fault=%u reads=%u/%u timeouts=%lu "
+                    "v_adc=%.4f v_zero=%.4f v_bus=%.4f\n",
+                    (unsigned long)d.timestamp_ms, (unsigned)d.logical_channel,
+                    (unsigned)d.chip, (unsigned)d.address, (unsigned)d.ain,
+                    (unsigned)(d.successful_reads > 0 ? 1 : 0),
+                    (unsigned)d.fault, (unsigned)d.successful_reads,
+                    (unsigned)d.sample_count, (unsigned long)d.timeout_count,
+                    (double)d.v_adc, (double)d.v_zero, (double)d.v_bus);
+      Serial.printf("VOLT_DIAG_TOTAL: chip=%u addr=0x%02X timeouts=%lu\n",
+                    (unsigned)d.chip, (unsigned)d.address,
+                    (unsigned long)voltageDiagnosticTimeouts(d.chip));
+      for (uint8_t i = 0; i < d.sample_count && i < VOLTAGE_DIAG_SAMPLES; i++) {
+        Serial.printf("VOLT_DIAG_SAMPLE: ch=%u n=%u valid=%u raw=%d vadc=%.4f\n",
+                      (unsigned)d.logical_channel, (unsigned)i,
+                      (unsigned)d.sample_valid[i], (int)d.raw[i],
+                      (double)d.sample_v_adc[i]);
+      }
+      VoltageReadDiagnostic history[VOLTAGE_DIAG_SAMPLES];
+      const uint8_t history_count =
+          voltageDiagnosticCopyHistory(c, history, VOLTAGE_DIAG_SAMPLES);
+      for (uint8_t i = 0; i < history_count; i++) {
+        Serial.printf("VOLT_DIAG_HISTORY: ch=%u ms=%lu valid=%u raw=%d vadc=%.4f\n",
+                      (unsigned)history[i].logical_channel,
+                      (unsigned long)history[i].timestamp_ms,
+                      (unsigned)history[i].valid, (int)history[i].raw,
+                      (double)history[i].v_adc);
+      }
+    }
+  }
 }
 
 static bool channelAdsReady(uint8_t c) {
   if (c >= MAX_CHANNELS) {
     return false;
   }
-  return voltageAdsOk(c < 4 ? 0 : 1) && s_ch[c].v_calibrated;
+  return voltageAdsOk(c < 4 ? 1 : 0) && s_ch[c].v_calibrated;
 }
 
 static bool motorAdsReady(const MotorRecord *m) {
@@ -261,6 +335,7 @@ static void handleCmd(const Command &cmd) {
     s_rt[mi].jam_count = 0;
     s_rt[mi].jam_phase = JAM_IDLE;
     s_rt[mi].jam_deadline_ms = 0;
+    resetSensorFaultDebounce(&s_rt[mi]);
     motorRelaysOn(mi);
     setTone(TONE_STARTED);
   } else if (cmd.type == CMD_STOP) {
@@ -279,6 +354,7 @@ static void handleCmd(const Command &cmd) {
     s_rt[mi].status = MST_STOPPED;
     zeroEnergy(mi);
     s_rt[mi].restart_count = 0;
+    resetSensorFaultDebounce(&s_rt[mi]);
     setTone(TONE_SILENCE);
   }
 }
@@ -310,16 +386,19 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
   if (*trip_ft != FT_NONE) {
     return;
   }
-  if (s.out_of_range || fabsf(s.rms) > SENSOR_I_CAP || s.stuck) {
-    *trip_ft = FT_SENSOR;
-    *trip_i = s.rms;
-    if (vs) {
-      *trip_v = vs->v_bus;
-    }
-    return;
-  }
   MotorRuntime *rt = &s_rt[mi];
-  if (s.rms >= m->stall_amps) {
+  if (rt->jam_phase == JAM_IDLE) {
+    if (s.out_of_range || fabsf(s.rms) > SENSOR_I_CAP || s.stuck) {
+      *trip_ft = FT_SENSOR;
+      *trip_i = s.rms;
+      if (vs) {
+        *trip_v = vs->v_bus;
+      }
+      return;
+    }
+  }
+  const float stall_threshold = effectiveStallThreshold(m, rt, now);
+  if (s.rms >= stall_threshold) {
     if (rt->jam_phase == JAM_IDLE) {
       const bool can_jam = m->stall_recovery &&
                            rt->jam_count < JAM_RELEASE_MAX &&
@@ -327,6 +406,7 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
       if (can_jam) {
         motorRelaysOff(mi);
         rt->jam_phase = JAM_OFF;
+        resetSensorFaultDebounce(rt);
         rt->jam_deadline_ms = now + JAM_RELEASE_OFF_MS;
       } else {
         *trip_ft = FT_STALL;
@@ -338,13 +418,16 @@ static void applySample(int mi, int p, const SampleResult &s, const VoltageSampl
       }
     }
   }
-  if (vs && !m->is_ac) {
+  if (vs && !m->is_ac && rt->jam_phase == JAM_IDLE) {
     if (!vs->present || vs->fault) {
-      *trip_ft = FT_SENSOR;
-      *trip_i = s.rms;
-      *trip_v = vs->v_bus;
+      if (registerSensorFault(rt, now)) {
+        *trip_ft = FT_SENSOR;
+        *trip_i = s.rms;
+        *trip_v = vs->v_bus;
+      }
       return;
     }
+    resetSensorFaultDebounce(rt);
     if (rt->jam_phase == JAM_IDLE) {
       const uint32_t age = now - rt->run_start_ms;
       if (age >= UV_GRACE_MS) {
@@ -421,12 +504,18 @@ static void applyVoltageSense(int mi, const VoltageSample *vs, uint32_t now,
       s_ch[c].last_v = vs->v_bus;
     }
   }
-  if (!vs->present || vs->fault) {
-    *trip_ft = FT_SENSOR;
-    *trip_v = vs->v_bus;
+  MotorRuntime *rt = &s_rt[mi];
+  if (rt->jam_phase != JAM_IDLE) {
     return;
   }
-  MotorRuntime *rt = &s_rt[mi];
+  if (!vs->present || vs->fault) {
+    if (registerSensorFault(rt, now)) {
+      *trip_ft = FT_SENSOR;
+      *trip_v = vs->v_bus;
+    }
+    return;
+  }
+  resetSensorFaultDebounce(rt);
   if (rt->jam_phase != JAM_IDLE) {
     return;
   }
@@ -581,6 +670,7 @@ static void processJamRelease(int mi, uint32_t now) {
     motorRelaysOn(mi);
     rt->jam_phase = JAM_WAIT;
     rt->jam_deadline_ms = now + JAM_RELEASE_WAIT_MS;
+    resetSensorFaultDebounce(rt);
     if (rt->jam_count < JAM_RELEASE_MAX) {
       rt->jam_count++;
     }
@@ -592,12 +682,13 @@ static void processJamRelease(int mi, uint32_t now) {
   bool still = false;
   float trip_i = 0;
   float trip_v = 0;
+  const float stall_threshold = effectiveStallThreshold(m, rt, now);
   for (int p = 0; p < m->phase_count; p++) {
     const uint8_t c = m->channels[p];
     if (c >= MAX_CHANNELS) {
       continue;
     }
-    if (s_ch[c].last_rms >= m->stall_amps) {
+    if (s_ch[c].last_rms >= stall_threshold) {
       still = true;
       if (s_ch[c].last_rms > trip_i) {
         trip_i = s_ch[c].last_rms;
@@ -610,11 +701,13 @@ static void processJamRelease(int mi, uint32_t now) {
     rt->jam_count = 0;
     rt->jam_phase = JAM_IDLE;
     rt->jam_deadline_ms = 0;
+    resetSensorFaultDebounce(rt);
     return;
   }
   if (rt->jam_count < JAM_RELEASE_MAX) {
     motorRelaysOff(mi);
     rt->jam_phase = JAM_OFF;
+    resetSensorFaultDebounce(rt);
     rt->jam_deadline_ms = now + JAM_RELEASE_OFF_MS;
     return;
   }

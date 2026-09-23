@@ -55,6 +55,8 @@ struct MotorRecord {
   uint8_t mains_hz;
   float   in_amps;
   float   stall_amps;
+  float   start_current;
+  uint32_t icd_ms;
   float   cooling_s;
   uint8_t auto_restart;
   uint8_t relay_active_high[MAX_PHASES];
@@ -115,6 +117,8 @@ struct MotorRuntime {
   uint8_t     power_is_w;
   uint8_t     restart_count;
   uint32_t    low_current_ms;
+  uint8_t     sensor_fault_count;
+  uint32_t    sensor_fault_first_ms;
   uint8_t     jam_count;
   uint8_t     jam_phase;
   uint32_t    jam_deadline_ms;

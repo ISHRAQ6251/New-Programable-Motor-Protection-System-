@@ -30,13 +30,19 @@ static const uint32_t VOLT_LOG_MS  = 2000;
 
 static const float NO_CURRENT_FRAC  = 0.05f;
 static const uint32_t NO_CURRENT_MS = 2000u;
+static const uint8_t SENSOR_FAULT_MIN_COUNT = 3;
+static const uint32_t SENSOR_FAULT_WINDOW_MS = 1000u;
 static const uint8_t MAX_RESTARTS   = 3;
 static const uint32_t CLEAN_RUN_MS  = 600000u;
 static const float COOLING_MAX_S    = 86400.0f;
 static const uint32_t WDT_TIMEOUT_MS = 5000u;
 static const float DT_MAX_S         = 5.0f;
 
-static const uint8_t JAM_RELEASE_MAX        = 3;
+static const uint32_t ICD_MIN_MS = 0u;
+static const uint32_t ICD_MAX_MS = 10000u;
+static const float ICD_MIN_CURRENT_FACTOR = 1.0f;
+
+static const uint8_t JAM_RELEASE_MAX        = 4;
 static const uint32_t JAM_RELEASE_OFF_MS    = 300;
 static const uint32_t JAM_RELEASE_WAIT_MS   = 500;
 static const uint32_t JAM_RELEASE_MIN_RUN_MS = 500;

@@ -90,6 +90,17 @@ static bool validateStructural(const MotorRecord *m, char *err, size_t err_len) 
     snprintf(err, err_len, "stall current must be > 0");
     return false;
   }
+  if (m->start_current > 0.0f) {
+    if (!(m->start_current >= m->in_amps) || !isfinite(m->start_current) ||
+        m->start_current > SENSOR_I_CAP) {
+      snprintf(err, err_len, "start current must be >= In and <= 40 A");
+      return false;
+    }
+  }
+  if (m->icd_ms > ICD_MAX_MS) {
+    snprintf(err, err_len, "ICD must be 0..10000 ms");
+    return false;
+  }
   if (!(m->cooling_s > 0.0f) || !isfinite(m->cooling_s)) {
     snprintf(err, err_len, "cooling time must be > 0");
     return false;

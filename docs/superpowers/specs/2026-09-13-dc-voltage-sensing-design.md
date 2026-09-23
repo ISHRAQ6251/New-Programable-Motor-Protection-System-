@@ -16,7 +16,7 @@ Add live DC bus voltage sensing (8 channels via 2x ADS1115) with optional underv
 | Voltage ADC | 2x ADS1115, I2C, not ESP32 ADC |
 | Driver | Adafruit ADS1X15 (+ Adafruit BusIO). No custom register driver |
 | I2C pins | GPIO 14 SDA, GPIO 42 SCL. `Wire.begin(14, 42)` never default 8/9 |
-| ADS addresses | 0x48 ADDR=GND → CH0–3 AIN0–3; 0x49 ADDR=VDD → CH4–7 AIN0–3 |
+| ADS addresses | 0x48 ADDR=GND → CH4–7 AIN0–3; 0x49 ADDR=VDD → CH0–3 AIN0–3 |
 | Gain | `GAIN_ONE` (±4.096 V) set explicitly after `begin()`, not library default |
 | Divider | R1=150 kΩ, R2=10 kΩ, scale 16. 0–50 V → ~0–3.13 V |
 | Tap point | Each motor's terminal voltage **downstream of its relay**, not the shared bus |
@@ -37,7 +37,7 @@ Firmware must:
 1. `Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL)` before each `ads.begin()`
 2. Call it again immediately after each `ads.begin()`
 3. Probe 0x48 / 0x49 with `Wire.endTransmission()` on the rebound bus
-4. `setGain(GAIN_ONE)` and `setDataRate(RATE_ADS1115_250SPS)` after begin
+4. `setGain(GAIN_ONE)` and `setDataRate(RATE_ADS1115_128SPS)` after begin
 
 Presence = probe ACK after re-bind, not the boolean from `ads.begin()` alone.
 

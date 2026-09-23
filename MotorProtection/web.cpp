@@ -200,6 +200,8 @@ static bool fillFromReq(AsyncWebServerRequest *req, MotorRecord *m) {
   m->mains_hz = (uint8_t)paramI(req, "hz", "50");
   m->in_amps = paramF(req, "in", "0");
   m->stall_amps = paramF(req, "stall", "0");
+  m->start_current = paramF(req, "startcur", "0");
+  m->icd_ms = (uint32_t)paramI(req, "icd", "0");
   m->cooling_s = paramF(req, "cool", "0");
   m->auto_restart = (uint8_t)paramI(req, "auto", "0");
   m->stall_recovery = (uint8_t)paramI(req, "jam", "0");
@@ -353,7 +355,7 @@ static void handleStatus(AsyncWebServerRequest *req) {
                  "\"uptime_ms\":%u,\"fault_count\":%u,\"last_fault\":\"%s\",\"channels\":[%s],"
                  "\"phases\":%u,\"rms\":[%s],\"volts\":[%s],\"thermal_pct\":%.1f,"
                   "\"power\":%s,\"power_unit\":\"%s\",\"energy\":%.2f,"
-                  "\"in\":%.4f,\"stall\":%.4f,\"cool\":%.3f,\"ac\":%u,\"hz\":%u,"
+                  "\"in\":%.4f,\"stall\":%.4f,\"startcur\":%.4f,\"icd\":%u,\"cool\":%.3f,\"ac\":%u,\"hz\":%u,"
                   "\"vac\":%.3f,\"uv\":%.3f,\"ov\":%.3f,\"auto\":%u,\"pol\":%u,\"vcal\":%u,"
                   "\"jam\":%u,\"jam_active\":%u,\"jam_count\":%u,\"vch\":%u,\"steps\":%s}",
                   i, m->name, (unsigned)snap.rt[i].status, stName(snap.rt[i].status),
@@ -361,7 +363,8 @@ static void handleStatus(AsyncWebServerRequest *req) {
                   ftName(snap.rt[i].last_fault), chbuf, (unsigned)m->phase_count,
                   rmsbuf, vbuf, (double)snap.thermal_pct[i],
                   pwr, m->is_ac ? "VA" : "W", (double)snap.rt[i].energy,
-                  (double)m->in_amps, (double)m->stall_amps, (double)m->cooling_s,
+                  (double)m->in_amps, (double)m->stall_amps, (double)m->start_current,
+                  (unsigned)m->icd_ms, (double)m->cooling_s,
                   (unsigned)m->is_ac, (unsigned)m->mains_hz,
                   (double)m->rated_ac_v, (double)m->uv_volts, (double)m->ov_volts,
                   (unsigned)m->auto_restart, (unsigned)m->relay_active_high[0],
@@ -527,6 +530,53 @@ static int appendRamLogRow(char *w, char *end, const LogEvent *ev) {
                   cur, volt, pwr_w, pwr_va);
 }
 
+static void appendCsvField(AsyncResponseStream *response, const char *value) {
+  response->print('"');
+  for (const char *p = value; p && *p; p++) {
+    if (*p == '"') {
+      response->print('"');
+    }
+    response->print(*p);
+  }
+  response->print('"');
+}
+
+static void sendRamLogCsv(AsyncWebServerRequest *req) {
+  LogEvent events[LOG_RING];
+  const int count = protectionCopyLog(events, LOG_RING);
+  AsyncResponseStream *response = req->beginResponseStream("text/csv");
+  response->addHeader("Content-Disposition", "attachment; filename=\"faults.csv\"");
+  response->addHeader("Cache-Control", "no-store");
+  response->print("uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA\r\n");
+  for (int i = 0; i < count; i++) {
+    const LogEvent &ev = events[i];
+    char number[24];
+    response->print((unsigned long)ev.uptime_ms);
+    response->print(',');
+    appendCsvField(response, ev.motor);
+    response->print(',');
+    appendCsvField(response, logFtName(ev.type));
+    response->print(',');
+    snprintf(number, sizeof(number), "%.3f", (double)ev.current_a);
+    response->print(number);
+    response->print(',');
+    snprintf(number, sizeof(number), "%.3f", (double)ev.voltage_v);
+    response->print(number);
+    response->print(',');
+    if (ev.power_is_w) {
+      snprintf(number, sizeof(number), "%.3f", (double)ev.power);
+      response->print(number);
+    }
+    response->print(',');
+    if (!ev.power_is_w) {
+      snprintf(number, sizeof(number), "%.3f", (double)ev.power);
+      response->print(number);
+    }
+    response->print("\r\n");
+  }
+  req->send(response);
+}
+
 static void handleLog(AsyncWebServerRequest *req) {
   if (!auth(req)) {
     return;
@@ -644,10 +694,14 @@ static void handleLogExport(AsyncWebServerRequest *req) {
     return;
   }
   if (!sdLogOk()) {
-    req->send(503, "text/plain", "SD unavailable");
+    sendRamLogCsv(req);
     return;
   }
-  req->send(SD, FAULT_LOG_PATH, "text/csv", true);
+  AsyncWebServerResponse *response =
+      req->beginResponse(SD, FAULT_LOG_PATH, "text/csv", true);
+  response->addHeader("Content-Disposition", "attachment; filename=\"faults.csv\"");
+  response->addHeader("Cache-Control", "no-store");
+  req->send(response);
 }
 
 static void handleLogClear(AsyncWebServerRequest *req) {

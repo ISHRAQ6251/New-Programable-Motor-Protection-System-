@@ -15,10 +15,10 @@ ADS modules and the SH1106 OLED at 0x3C share this bus (`s_i2c_mu` serializes ev
 
 ## ADDR map (fixed in firmware)
 
-| Module | ADDR pin | Address | Channels |
+| Module | ADDR pin | Address | Logical channels |
 |---|---|---|---|
-| ADS #1 | GND | **0x48** | CH0–CH3 → AIN0–AIN3 |
-| ADS #2 | VDD | **0x49** | CH4–CH7 → AIN0–AIN3 |
+| ADS #1 | GND | **0x48** | CH4–CH7 → AIN0–AIN3 |
+| ADS #2 | VDD | **0x49** | CH0–CH3 → AIN0–AIN3 |
 
 Swapping the two physical boards does **not** swap channels. A mixed-up ADDR pin shows as the wrong chip missing.
 
@@ -55,9 +55,9 @@ At `voltageBegin()` and each Calibrate re-probe:
 ```
 I2C: initialized SDA=14 SCL=42 clock=400000Hz
 I2C: scan 0x48 0x49
-I2C: expected 0x48 (ADDR->GND)=CH0-3, 0x49 (ADDR->VDD)=CH4-7
-ADS: 0x48 ok GAIN_ONE 250SPS
-ADS: 0x49 ok GAIN_ONE 250SPS
+I2C: expected 0x48 (ADDR->GND)=CH4-7, 0x49 (ADDR->VDD)=CH0-3
+ADS: 0x48 ok GAIN_ONE 128SPS
+ADS: 0x49 ok GAIN_ONE 128SPS
 ```
 
 `loop()` prints at most every 5 s while a chip or channel zero is missing:
@@ -79,7 +79,14 @@ I2C: diag ads_ok=[1,0] vcal=[1,1,1,1,0,0,0,0]
 
 ## Conversion timeout
 
-`readAdcVolts()` waits at most **20 ms** (`MPS_ADS_READ_TIMEOUT_MS`) for `conversionComplete()`. 250 SPS is ~4 ms nominal. Timeout → that sample is treated as missing (`present=0`); a running DC motor then trips `SENSOR_FAULT`.
+`readAdcVolts()` starts a conversion under the mutex, releases the bus while the ADS converts, then reacquires it only for short status/result reads. At 128 SPS the nominal conversion is 7.8 ms; firmware waits 10 ms before polling and allows 35 ms for completion. Timeout → that sample is treated as missing (`present=0`); a running DC motor then trips `SENSOR_FAULT`.
+
+When a DC `SENSOR_FAULT` occurs, the firmware prints `VOLT_DIAG` lines containing the
+logical channel, ADS address/AIN, averaged ADC voltage, calibration zero, bus voltage,
+sample validity, and timeout count. `VOLT_DIAG_SAMPLE` contains the four samples from the
+faulting voltage window; `VOLT_DIAG_HISTORY` contains recent raw-read entries from the
+per-channel RAM diagnostic ring. These diagnostics do not change trip behavior and do not
+modify the installed Adafruit libraries.
 
 ## Calibrate vs reboot
 

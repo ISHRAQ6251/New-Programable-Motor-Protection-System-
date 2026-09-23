@@ -13,8 +13,9 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - Up to **8 channels** = 8 current sensors + 8 relays + 8 DC voltage taps (2× ADS1115)
 - **1-phase** motor = 1 channel; **3-phase** motor = 3 linked channels, one dashboard row
 - Classic **I²t energy** trip curve (not inverse-time interpolation)
-- Independent **stall** trip on the next RMS window; optional per-motor **stall recovery** (jam release: 3 short power pulses)
-- **Sensor-fault** trip (stuck ADC, out-of-range Vadc, |I| > 40 A, or missing ADS1115 on a DC channel)
+- Independent **stall** trip on the next RMS window; optional per-motor **stall recovery** (jam release: 4 short power pulses)
+- **Inrush current protection**: configurable starting-current + ICD suppresses startup stall false trips during the first few seconds after Start
+- **Sensor-fault** trip (stuck ADC, out-of-range Vadc, |I| > 40 A, or missing ADS1115 on a DC channel); a real fault requires 3 consecutive faults within 1 s
 - **No-current** trip after 2 s Running below 5 % of In (broken sense wire / open winding)
 - Live **DC voltage** with optional undervoltage / overvoltage trip (0 = that trip disabled; 750 ms grace after Start; 4-sample average + 0.9/0.1 LPF)
 - **User-selectable current channels** on Add/Edit (Auto or pin CH0–CH7); DC motors also pick a **voltage sense channel** (same as current, or a dedicated ADS tap)
@@ -36,7 +37,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 | Arduino IDE board | ESP32S3 Dev Module, Flash 16 MB, PSRAM OPI |
 | Sensors | ACS712-30A, 66 mV/A, 5 V supply |
 | Analog path | 10 k / 15 k divider (x0.6) to ADC1 — about 39.6 mV/A |
-| DC voltage | 2× ADS1115 (I²C **0x48** ADDR→GND = CH0–3, **0x49** ADDR→VDD = CH4–7), 150 k / 10 k divider (scale 16), tap downstream of each relay |
+| DC voltage | 2× ADS1115 (I²C **0x48** ADDR→GND = CH4–7, **0x49** ADDR→VDD = CH0–3), 150 k / 10 k divider (scale 16), tap downstream of each relay |
 | Relays | Logic-level modules, default active-LOW, boot HIGH = OFF |
 | SD | 3.3 V SPI breakout (not SDIO, not 5 V) |
 | Buzzer | Passive, LEDC PWM |
@@ -72,9 +73,9 @@ E_trip  = (k × In)² × t_trip
 
 Active step = highest `k` with `I_rms >= k × In`. Trip **I2T** when `E >= E_trip`. Below pickup, `E` decays toward 0 over the motor cooling time.
 
-Stall: `I_rms >= stall_amps` on the next window → trip **STALL** immediately, unless stall recovery is enabled (then up to 3× 300/500 ms jam-release pulses after 500 ms of Running).
+Stall: `I_rms >= stall_amps` on the next window → trip **STALL** immediately, unless stall recovery is enabled (then up to 4× 300/500 ms jam-release pulses after 500 ms of Running). During the configured inrush window, the effective stall threshold may be raised using the per-motor starting-current setting.
 
-Sensor fault → trip **SENSOR_FAULT** immediately. Auto-restart still applies.
+Sensor fault → trip **SENSOR_FAULT** only after 3 consecutive faults within 1 s; a single spike or glitch is ignored. A stalled motor is treated as a stall-first condition so the voltage fault does not mask the correct trip. Auto-restart still applies.
 
 Running and max phase current `< 0.05 × In` for 2 s → trip **NO_CURRENT**.
 
@@ -85,6 +86,15 @@ On trip: de-energize that motor's relay(s), sound the fault tone, append an SD l
 3-phase: one motor, three channels; any phase trips all three relays; the UI shows one row. Thermal % is the hottest phase (`100 × E / E_trip`).
 
 Power: DC `P = Vdc × I_dc` (`W`); AC 1-phase `S = V_rated × I_rms` (`VA`); AC 3-phase `S = (V_rated/√3) × ΣI` (`VA`). Energy is RAM only and resets on Start and reboot.
+
+## Limits and configuration
+
+| Setting | Range | Notes |
+|---|---|---|
+| Stall recovery attempts | 0–4 | `JAM_RELEASE_MAX = 4` |
+| Inrush duration | 0–10000 ms | `icd_ms`, 0 disables the feature |
+| Inrush starting current | 0–40 A | `start_current`, 0 disables the feature |
+| Sensor-fault debounce | 3 samples in 1 s | Single spikes are ignored |
 
 ## Flash with Arduino IDE
 
@@ -191,7 +201,7 @@ Relays default OFF at boot. Confirm polarity before the first Start (default act
 - 2026-09-21 pin/bus correction: encoder 47/48/46; OLED shares ADS1115 `Wire` 14/42; `s_i2c_mu` serializes every Wire transaction; GPIO 22–25 are not physical pins
 - 2026-09-21 encoder off GPIO 48: CLK 47 / DT 46 / SW 19; NeoPixel status LED on GPIO 48; 3-frame status icons
 - 2026-09-21 ENC_SW off GPIO 19 (USB D-) to GPIO 3; early `MPS-505 boot...` Serial print
-- 2026-09-21 stall recovery (3× 300/500 ms jam-release pulses) and 32-entry RAM fault ring (`ram_only` log page)
+- 2026-09-21 stall recovery (4× 300/500 ms jam-release pulses) and 32-entry RAM fault ring (`ram_only` log page)
 
 ## License
 

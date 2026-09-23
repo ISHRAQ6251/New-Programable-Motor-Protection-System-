@@ -137,6 +137,12 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <span class="help dc-only">Same as current uses the ADS tap on current CH0. Pick 0–7 for a dedicated tap.</span>
       <label for="a-stall">Stall current (A)</label>
       <input id="a-stall" name="stall" type="number" step="0.01" min="0.01" required>
+      <label for="a-startcur">Starting current (A)</label>
+      <input id="a-startcur" name="startcur" type="number" step="0.1" min="0" value="0">
+      <span class="help">Inrush threshold during startup. 0 disables the elevated threshold.</span>
+      <label for="a-icd">Inrush duration (ms)</label>
+      <input id="a-icd" name="icd" type="number" min="0" max="10000" step="100" value="0">
+      <span class="help">How long after Start the elevated threshold applies. 0 disables it.</span>
       <label for="a-cool">Cooling time (s)</label>
       <input id="a-cool" name="cool" type="number" step="0.1" min="0.1" required>
       <label for="a-auto">Auto-restart</label>
@@ -187,6 +193,12 @@ input[type=checkbox]{width:auto;min-height:0;justify-self:start;margin:0}
       <span class="help e-dc-only">Same as current uses the ADS tap on current CH0. Pick 0–7 for a dedicated tap.</span>
       <label for="e-stall">Stall current (A)</label>
       <input id="e-stall" type="number" step="0.01" min="0.01" required>
+      <label for="e-startcur">Starting current (A)</label>
+      <input id="e-startcur" type="number" step="0.1" min="0" value="0">
+      <span class="help">Inrush threshold during startup. 0 disables the elevated threshold.</span>
+      <label for="e-icd">Inrush duration (ms)</label>
+      <input id="e-icd" type="number" min="0" max="10000" step="100" value="0">
+      <span class="help">How long after Start the elevated threshold applies. 0 disables it.</span>
       <label for="e-cool">Cooling time (s)</label>
       <input id="e-cool" type="number" step="0.1" min="0.1" required>
       <label for="e-auto">Auto-restart</label>
@@ -300,7 +312,7 @@ function renderDash(){
     const canStop=m.status===1;
     const canReset=m.status===2||m.status===3;
     const fault=m.last_fault&&(m.status===2||m.status===3)?'<span class="fault-tag">'+esc(m.last_fault)+"</span>":"";
-    const jam=m.jam_active?'<span class="jam-tag">JAM ('+(m.jam_count||0)+"/3)</span>":"";
+    const jam=m.jam_active?'<span class="jam-tag">JAM ('+(m.jam_count||0)+"/4)</span>":"";
     const tr=document.createElement("tr");
     tr.innerHTML="<td class='mono'>"+esc((m.channels||[]).join(", "))+"</td><td>"+esc(m.name)+
       "<div class='dash-field'>"+(m.ac?("AC "+Number(m.vac||0).toFixed(0)+" V "+(m.hz||"")+" Hz"):"DC")+"</div></td>"+
@@ -448,7 +460,8 @@ $("f-add").onsubmit=ev=>{
     "&ch0="+$("a-ch0").value+
     "&ch1="+(ph===3?$("a-ch1").value:"-1")+
     "&ch2="+(ph===3?$("a-ch2").value:"-1")+
-     "&stall="+$("a-stall").value+"&cool="+$("a-cool").value+"&auto="+$("a-auto").value+
+     "&stall="+$("a-stall").value+"&startcur="+$("a-startcur").value+"&icd="+$("a-icd").value+
+     "&cool="+$("a-cool").value+"&auto="+$("a-auto").value+
      "&jam="+($("a-jam").checked?1:0)+
     "&pol="+$("a-pol").value+"&n="+n;
   for(let i=0;i<n;i++){
@@ -483,7 +496,7 @@ function fillEditForm(){
   vchOpts($("e-vch"),(typeof m.vch==="number"&&m.vch<8)?m.vch:-1);
   syncPhases("e");
   $("e-name").value=m.name;$("e-in").value=m.in;$("e-ac").value=m.ac?1:0;
-  $("e-hz").value=m.hz||50;$("e-stall").value=m.stall;$("e-cool").value=m.cool;
+  $("e-hz").value=m.hz||50;$("e-stall").value=m.stall;$("e-startcur").value=m.startcur||0;$("e-icd").value=m.icd||0;$("e-cool").value=m.cool;
   $("e-auto").value=m.auto?1:0;$("e-jam").checked=!!m.jam;$("e-pol").value=m.pol?1:0;$("e-n").value=m.steps.length||1;
   $("e-vac").value=m.vac||"";
   $("e-uv").value=m.uv||0;
@@ -505,7 +518,8 @@ $("f-edit").onsubmit=ev=>{
     "&ch0="+$("e-ch0").value+
     "&ch1="+(ph===3?$("e-ch1").value:"-1")+
     "&ch2="+(ph===3?$("e-ch2").value:"-1")+
-     "&stall="+$("e-stall").value+"&cool="+$("e-cool").value+"&auto="+$("e-auto").value+
+     "&stall="+$("e-stall").value+"&startcur="+$("e-startcur").value+"&icd="+$("e-icd").value+
+     "&cool="+$("e-cool").value+"&auto="+$("e-auto").value+
      "&jam="+($("e-jam").checked?1:0)+
     "&pol="+$("e-pol").value+"&n="+n;
   for(let k=0;k<n;k++){
@@ -528,16 +542,16 @@ function loadLog(){
     const ram=!!j.ram_only;
     $("log-unavail").hidden=!!j.sd_ok || ram;
     $("log-ram").hidden=!ram;
-    $("log-wrap").hidden=!(j.sd_ok || ram);
-    $("log-actions").hidden=!(j.sd_ok || ram);
-    $("log-export").hidden=ram;
+    $("log-wrap").hidden=false;
+    $("log-actions").hidden=false;
+    $("log-export").hidden=false;
     const tb=$("log-body");tb.innerHTML="";
     (j.rows||[]).forEach(row=>{
       const tr=document.createElement("tr");
       tr.innerHTML="<td>"+esc(row.uptime_ms)+"</td><td>"+esc(row.motor)+"</td><td>"+esc(row.type)+"</td><td>"+esc(row.current_A)+"</td><td>"+esc(row.voltage_V||"")+"</td><td>"+esc(row.power_W||"")+"</td><td>"+esc(row.power_VA||"")+"</td>";
       tb.appendChild(tr);
     });
-    if(!(j.rows||[]).length && (j.sd_ok || ram)){
+    if(!(j.rows||[]).length){
       tb.innerHTML="<tr><td colspan='7' class='empty'>No fault entries.</td></tr>";
     }
   });

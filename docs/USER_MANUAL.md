@@ -152,8 +152,8 @@ ESP32 ADC1 is fully used by current sensing. DC voltage uses two ADS1115 16-bit 
 
 | Module | ADDR pin | I²C address | Channels |
 |---|---|---|---|
-| ADS #1 | GND | 0x48 | CH0–CH3 → AIN0–AIN3 |
-| ADS #2 | VDD | 0x49 | CH4–CH7 → AIN0–AIN3 |
+| ADS #1 | GND | 0x48 | CH4–CH7 → AIN0–AIN3 |
+| ADS #2 | VDD | 0x49 | CH0–CH3 → AIN0–AIN3 |
 
 Firmware calls `i2cInitOnce()` once (`Wire.begin(14, 42)`). Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins, so the sketch re-binds 14/42 after each `begin()`. **Never `Wire.end()`** — it destroys the driver (see `docs/I2C_TROUBLESHOOTING.md`). Gain is **GAIN_ONE** (±4.096 V). Both ADS1115 modules and the SH1106 OLED share that bus, serialized by `s_i2c_mu`; use 4.7 kΩ–10 kΩ pull-ups on SDA/SCL to 3.3 V if the breakout boards do not already have them. Calibrate re-runs `voltageReprobe()` so an ADDR-pin fix is picked up without a reboot.
 
@@ -248,8 +248,8 @@ On every reset the firmware prints something like:
 ```
 I2C: initialized SDA=14 SCL=42 clock=400000Hz
 I2C: scan 0x48
-I2C: expected 0x48 (ADDR->GND)=CH0-3, 0x49 (ADDR->VDD)=CH4-7
-ADS: 0x48 ok GAIN_ONE 250SPS
+I2C: expected 0x48 (ADDR->GND)=CH4-7, 0x49 (ADDR->VDD)=CH0-3
+ADS: 0x48 ok GAIN_ONE 128SPS
 ADS: 0x49 not found (I2C err=2 NACK addr)
 NVS: no motor blob — starting empty
 SD: mount failed — card missing, 5 V on a 3.3 V breakout, or CS/SPI wiring
@@ -322,11 +322,13 @@ Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silen
    - DC: optional **Undervoltage** and **Overvoltage** in volts. **0 disables** that trip. If both are set, OV must be greater than UV. Live V is the terminal downstream of the relay.
    - DC **Voltage sense channel**: **Same as current** (default — ADS tap on current CH0) or pin **CH0–CH7** for a dedicated voltage tap. Voltage taps may be shared; current channels may not.
 5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window, unless stall recovery is enabled. Must exceed In and every I²t step current.
-6. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
-7. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off). On still latches Fault after 3 consecutive trips; a 10-minute trip-free run, Start, or Reset clears the counter.
-8. **Stall recovery (jam release)** — optional. Off by default. See §5.2.1.
-9. **Relay polarity** — Active-LOW (default) or Active-HIGH for this motor's channels.
-10. **N protection steps** (1–8). For each step enter:
+6. **Starting current (A)** — optional inrush threshold used only during the startup window. Set `0` to disable. Typical values are 1–4× In, but never below In.
+7. **Inrush duration (ms)** — how long after Start the elevated startup threshold is used. Set `0` to disable. Typical values are 500–3000 ms for most motors.
+8. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
+9. **Auto-restart** — after cooling, return to Running (On) or stay in Fault (Off). On still latches Fault after 3 consecutive trips; a 10-minute trip-free run, Start, or Reset clears the counter.
+10. **Stall recovery (jam release)** — optional. Off by default. See §5.2.1.
+11. **Relay polarity** — Active-LOW (default) or Active-HIGH for this motor's channels.
+12. **N protection steps** (1–8). For each step enter:
    - **k × In** — current multiplier (e.g. 1.2 means 1.2 × operating current)
    - **trip time (s)** — how long that energy budget lasts at exactly `k × In`
 
@@ -350,8 +352,8 @@ When enabled and the motor has been Running for at least **500 ms**, a stall doe
 1. De-energize **300 ms**, then re-energize.
 2. Wait **500 ms** for spin-up, then re-check current.
 3. If current is below stall: resume Running and zero the jam-attempt count.
-4. If still stalled: repeat, up to **3** pulses total.
-5. If all 3 fail: trip `STALL` and enter Cooling as usual.
+4. If still stalled: repeat, up to **4** pulses total.
+5. If all 4 fail: trip `STALL` and enter Cooling as usual.
 
 Timing is fixed (not user-configurable). Jam attempts are a **separate counter** from auto-restart. A successful jam recovery does **not** clear the auto-restart counter. After a failed jam sequence the motor cools, then auto-restart (if enabled) does a full Start — not more jam pulses — and the 500 ms run-in applies again.
 
@@ -359,7 +361,22 @@ While pulses are in progress, I²t energy still accumulates and `SENSOR_FAULT` s
 
 **Do not enable** on pumps, precision equipment, or fragile loads. The pulses are short, but they still apply power to a stalled machine.
 
-The dashboard shows `JAM (n/3)` next to status while a sequence is active. The local OLED panel does not show jam state.
+The dashboard shows `JAM (n/4)` next to status while a sequence is active. The local OLED panel does not show jam state.
+
+### 5.2.2 Inrush current protection
+
+Some motors draw a large initial current while accelerating from rest. A startup inrush can look like a stalled rotor if stall detection uses the normal running threshold immediately. To prevent a false `STALL` during this brief window, the firmware supports **Starting current** and **Inrush duration** settings:
+
+- `start_current`: the elevated stall threshold to use while the motor is still accelerating, in amps.
+- `icd_ms`: how long after Start this threshold should apply. `0` disables the feature.
+
+During the first `icd_ms` after Start, the effective stall threshold is `start_current` instead of the normal `stall_amps`. After the window expires, normal stall protection resumes. This is especially useful for motors that naturally start at 4–8× In. Set `start_current` to the expected startup current peak, and use an ICD of roughly 500–3000 ms unless the motor needs a longer ramp-up.
+
+### 5.2.3 Sensor fault debounce
+
+A real sensor fault is not triggered by one noisy reading. The firmware requires **3 consecutive sensor-fault samples within 1 second** before a motor trips `SENSOR_FAULT`. Single spikes are ignored, but a persistent failure still trips quickly.
+
+This protects the motor from an isolated bad conversion while still failing fast on an actual out-of-range voltage sensor or missing ADS1115.
 
 ### 5.3 Start, stop, reset, calibrate
 
@@ -372,7 +389,7 @@ The dashboard shows `JAM (n/3)` next to status while a sequence is active. The l
 
 Every trip is written to a **32-entry RAM ring** (most recent first). If an SD card is mounted, the same event is also appended to `/faults.csv`.
 
-If a card is mounted: file `/faults.csv` on the card. The Log page shows the full CSV. Export downloads it. Clear rewrites the SD header and also empties the 32-entry RAM ring.
+If a card is mounted: file `/faults.csv` on the card. The Log page shows the full CSV. Export downloads it as `faults.csv`. Clear rewrites the SD header and also empties the 32-entry RAM ring.
 
 ```
 uptime_ms,motor,type,current_A,voltage_V,power_W,power_VA
@@ -384,7 +401,7 @@ DC rows fill `power_W`; AC rows fill `power_VA`; the other column is blank. Powe
 
 Types: `I2T`, `STALL`, `SENSOR_FAULT`, `UNDERVOLT`, `OVERVOLT`, `NO_CURRENT`. Time is milliseconds since ESP32 boot (no NTP on SoftAP). Older 4- or 5-column rows still parse; missing columns read as blank.
 
-No card: the Log page shows the RAM ring and a yellow/amber banner **RAM buffer only — logs lost on reboot**. Export stays SD-only (hidden). Clear empties the RAM ring (always available). Motors still protect. The OLED Fault Log uses the same RAM ring (also lost on reboot). Fault logs are never written to NVS.
+No card: the Log page shows the RAM ring and a yellow/amber banner **RAM buffer only — logs lost on reboot**. Export remains visible and downloads the newest-first RAM ring as `faults.csv`. Clear empties the RAM ring (always available). Motors still protect. The OLED Fault Log uses the same RAM ring (also lost on reboot). Fault logs are never written to NVS.
 
 ### 5.5 Buzzer patterns
 
@@ -524,18 +541,18 @@ DC motors skip RMS and use the mean of |i| over 20 ms.
 
 If `I_rms >= stall_amps` after **one** sample window, trip type `STALL` immediately — unless stall recovery is enabled for that motor (see §5.2.1). No I²t wait on the stall path. Typical use without recovery: locked rotor, many times In.
 
-With stall recovery: after 500 ms of Running, up to 3 pulses (300 ms off, 500 ms wait). I²t still accumulates during pulses. Exhaustion trips `STALL` and enters Cooling. Jam attempts do not count as auto-restarts.
+With stall recovery: after 500 ms of Running, up to 4 pulses (300 ms off, 500 ms wait). I²t still accumulates during pulses. Exhaustion trips `STALL` and enters Cooling. Jam attempts do not count as auto-restarts.
 
 ### 7.4 Sensor fault
 
-Immediate trip `SENSOR_FAULT` if, on an assigned channel while Running:
+A real `SENSOR_FAULT` requires **3 consecutive faulted samples within 1 s**. A single noisy glitch or brief out-of-range reading is ignored. Once the count is reached, the firmware trips if, on an assigned channel while Running:
 
 - Mean ADC voltage outside **0.05–3.05 V** (open or shorted divider)
 - |I_rms| above **40 A** (beyond a 30 A sensor)
 - AC or DC reading **stuck** (identical millivolt samples across a full window)
 - DC: ADS1115 missing / I²C timeout, |V_adc| > 4 V, or |V_bus| > 55 V
 
-Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (this is trip-immediately, not latched).
+A stalled motor is handled as a **stall-first** condition so the sensor fault does not mask the correct trip. Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (this is trip-immediately, not latched).
 
 If every phase of a Running motor stays below **0.05 × In** for **2 s**, trip `NO_CURRENT`. That catches a broken sense wire sitting at ACS712 mid-rail (~0 A), an open winding, or a relay that never closed.
 
@@ -573,7 +590,7 @@ Key points:
 ```
 Stopped --Start--> Running
 Running --Stop---> Stopped
-Running --stall, recovery On, after 500 ms run--> jam pulses (3× 300/500 ms)
+Running --stall, recovery On, after 500 ms run--> jam pulses (4× 300/500 ms)
 jam recovered --> Running (jam_count=0; auto-restart counter unchanged)
 jam exhausted --> Cooling as STALL
 Running --trip---> Cooling      relays OFF, log, fault tone
@@ -603,7 +620,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | UV/OV grace | 750 ms after DC Start |
 | No-current trip | Running and max phase `< 0.05 × In` for 2 s |
 | Auto-restart cap | 3 consecutive trips, then Fault; 10 min clean run clears |
-| Stall recovery | 3 pulses, 300 ms off / 500 ms wait, 500 ms min run; default off |
+| Stall recovery | 4 pulses, 300 ms off / 500 ms wait, 500 ms min run; default off |
 | Task WDT | 5 s on the protection task (hang → MCU reset, relays off) |
 | Fault log | SD `/faults.csv` when present; else 32-entry RAM ring (`ram_only`) |
 | Power | DC `W` (true); AC `VA` (apparent at rated V); PF unknown |
@@ -624,7 +641,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | Log page yellow banner “RAM buffer only” | No SD or 5 V fed to a 3.3 V breakout | Insert a FAT-formatted card on 3.3 V SPI for persistent CSV; RAM ring still shows last 32 trips |
 | Compile error `ledcChangeFrequency` | Mixing ESP32 core 2.x vs 3.x | Use Arduino-ESP32 3.x and `ledcAttach` / 3-arg `ledcChangeFrequency` |
 | Heap numbers falling forever | Leak (should stabilize ~200 kB free after login) | Capture Serial heap lines; expected small sawtooth from TCP |
-| DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 always 0x48, CH4–7 always 0x49. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
+| DC Start disabled / "needs ADS1115" | Chip unpopulated, ADDR pin wrong, SDA/SCL swap, or I²C on GPIO 8/9 | Serial `I2C: scan` then `ADS: 0x48/0x49`. CH0–3 are served by 0x49 and CH4–7 by 0x48. Press Calibrate (`voltageReprobe`); see `docs/I2C_TROUBLESHOOTING.md` |
 | `I2C: diag ads_ok=[0,…]` every 5 s | Expected chip missing or bus fault | Match the scan list to 0x48/0x49. `err=2` (NACK addr) = nothing at that address; `err=5` (timeout) = stuck bus / SDA-SCL swap / missing pull-ups |
 | OLED blank / no local panel | U8g2 not installed, wrong address, or bus contention | Confirm 0x3C on the shared Wire bus (GPIO 14/42). Constructor is `U8G2_SH1106_128X64_NONAME_F_HW_I2C` |
 | Encoder direction reversed | CLK/DT swapped for your module | Swap the CLK and DT wires (CLK 47 / DT 46 / SW 3). Bounce is already absorbed by the state-table decoder |

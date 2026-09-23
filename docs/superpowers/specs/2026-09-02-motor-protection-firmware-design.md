@@ -133,7 +133,7 @@ Analog path (current):
 
 Analog path (DC voltage):
 
-- 2× ADS1115 on I²C: 0x48 (ADDR→GND) = CH0–3 AIN0–3; 0x49 (ADDR→VDD) = CH4–7 AIN0–3
+- 2× ADS1115 on I²C: 0x48 (ADDR→GND) = CH4–7 AIN0–3; 0x49 (ADDR→VDD) = CH0–3 AIN0–3
 - Per channel divider R1=150 kΩ / R2=10 kΩ (scale 16), 0–50 V → ~0–3.13 V
 - Gain `GAIN_ONE` (±4.096 V), data rate 250 SPS, set explicitly after `begin()`
 - `V_bus = (V_adc - v_zero) * 16.0`; `v_zero` is calibrated with the relay open, never assumed 0 V
@@ -239,7 +239,7 @@ Thermal load % (dashboard): `0` below pickup; otherwise `100 * E / E_trip` of th
 
 If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately, unless `stall_recovery` is enabled. No I²t involvement on the stall path.
 
-Optional jam release (fixed constants, not user-timed): after `JAM_RELEASE_MIN_RUN_MS` (500) of Running, de-energize `JAM_RELEASE_OFF_MS` (300), re-energize, wait `JAM_RELEASE_WAIT_MS` (500), re-check. Up to `JAM_RELEASE_MAX` (3) pulses. Success zeros `jam_count` only (not the auto-restart counter). Exhaustion trips `STALL` and Cooling as usual. While `jam_phase != JAM_IDLE`: skip stall / UV / OV / `NO_CURRENT`; keep I²t accumulation and `SENSOR_FAULT`. No extra grace after jam ends.
+Optional jam release (fixed constants, not user-timed): after `JAM_RELEASE_MIN_RUN_MS` (500) of Running, de-energize `JAM_RELEASE_OFF_MS` (300), re-energize, wait `JAM_RELEASE_WAIT_MS` (500), re-check. Up to `JAM_RELEASE_MAX` (4) pulses. Success zeros `jam_count` only (not the auto-restart counter). Exhaustion trips `STALL` and Cooling as usual. While `jam_phase != JAM_IDLE`: skip stall / UV / OV / `NO_CURRENT`; keep I²t accumulation and `SENSOR_FAULT`. No extra grace after jam ends.
 
 ### 6.4 Sensor fault
 

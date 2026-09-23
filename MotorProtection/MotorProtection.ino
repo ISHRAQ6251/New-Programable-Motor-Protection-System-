@@ -64,9 +64,9 @@ void setup() {
   voltageBegin();
   {
     char note[48];
-    snprintf(note, sizeof(note), "ADS 0x48 %s / 0x49 %s",
-             voltageAdsOk(0) ? "ok" : "missing",
-             voltageAdsOk(1) ? "ok" : "missing");
+    snprintf(note, sizeof(note), "ADS 0x49 CH0-3 %s / 0x48 CH4-7 %s",
+             voltageAdsOk(1) ? "ok" : "missing",
+             voltageAdsOk(0) ? "ok" : "missing");
     uiBootNote(note);
   }
   Serial.println("init: motor store...");
