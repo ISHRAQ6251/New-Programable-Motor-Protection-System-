@@ -13,7 +13,7 @@ Full wiring, Arduino IDE steps, dashboard use, and trip math: `docs/USER_MANUAL.
 - Up to **8 channels** = 8 current sensors + 8 relays + 8 DC voltage taps (2× ADS1115)
 - **1-phase** motor = 1 channel; **3-phase** motor = 3 linked channels, one dashboard row
 - Classic **I²t energy** trip curve (not inverse-time interpolation)
-- Independent **stall** trip on the next RMS window; optional per-motor **stall recovery** (jam release: 4 short power pulses)
+- Independent **stall** trip on the next averaged RMS update (AC: rolling 4-cycle window); optional per-motor **stall recovery** (jam release: 4 short power pulses)
 - **Inrush current protection**: configurable starting-current + ICD suppresses startup stall false trips during the first few seconds after Start
 - **Sensor-fault** trip: current path (stuck ADC, out-of-range Vadc, |I| > 40 A) trips on that sample; DC voltage path (missing ADS1115 / I²C timeout / |Vadc| > 4 V / |Vbus| > 55 V) needs 3 consecutive faults within 1 s; both skipped during jam release
 - **No-current** trip after 2 s Running below 5 % of In (broken sense wire / open winding)
@@ -62,7 +62,7 @@ All GPIO numbers live only in `MotorProtection/config_pins.h`.
 
 ## Protection logic (short)
 
-Sampling: at least 32 samples over at least one AC cycle (20 ms at 50 Hz, 16.67 ms at 60 Hz). True RMS. DC uses a 20 ms mean of |i|.
+Sampling: at least 32 samples over at least one AC cycle (20 ms at 50 Hz, 16.67 ms at 60 Hz). AC current is one combined true RMS over a rolling window of **4 consecutive mains cycles** (`AC_AVG_CYCLES`; 80 ms at 50 Hz, 66.7 ms at 60 Hz; at least 128 samples). The window updates every cycle from the last complete cycles collected so far (no zero pad after Start) and resets on Start, Stop, Reset, zero-current calibration, and channel reassignment. A stopped motor reads 0 A. Active AC channels of the same frequency are interleaved so a full pass stays about one cycle. DC uses a 20 ms mean of |i|.
 
 While Running and `I_rms >= k_min × In`:
 
@@ -73,7 +73,7 @@ E_trip  = (k × In)² × t_trip
 
 Active step = highest `k` with `I_rms >= k × In`. Trip **I2T** when `E >= E_trip`. Below pickup, `E` decays toward 0 over the motor cooling time.
 
-Stall: `I_rms >= stall_amps` on the next window → trip **STALL** immediately, unless stall recovery is enabled (then up to 4× 300/500 ms jam-release pulses after 500 ms of Running). During the configured inrush window (`icd_ms` > 0 and `start_current` > 0), the effective stall threshold is `start_current`. While jam pulses run, skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t.
+Stall: `I_rms >= stall_amps` on the next averaged RMS update → trip **STALL**, unless stall recovery is enabled (then up to 4× 300/500 ms jam-release pulses after 500 ms of Running). AC stall / pickup / I²t therefore lag up to about four mains cycles (~80 ms at 50 Hz). During the configured inrush window (`icd_ms` > 0 and `start_current` > 0), the effective stall threshold is `start_current`. While jam pulses run, skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t.
 
 Sensor fault, while not in jam: current path (stuck ADC, Vadc outside 0.05–3.05 V, |I| > 40 A) trips **SENSOR_FAULT** on that sample; DC voltage path trips only after 3 consecutive voltage faults within 1 s. Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT`, `OV`, `UV`, `I2T`. Auto-restart still applies.
 
@@ -144,7 +144,7 @@ MotorProtection/          Arduino IDE sketch (firmware)
   types.h                 MotorRecord, ChannelRuntime, VoltageSample, statuses
   relays.cpp              Polarity-aware coil drive
   buzzer.cpp              Non-blocking LEDC tones
-  sensing.cpp             Current: calibrate + true RMS / DC mean
+  sensing.cpp             Current: calibrate + true RMS / DC mean; AC 4-cycle rolling RMS
   voltage.cpp / voltage.h DC voltage: 2× ADS1115, i2cInitOnce, voltageReprobe, 128 SPS, VOLT_DIAG
   protection.cpp          I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / inrush / power
   motor_store.cpp         NVS blob + dashboard login credentials
@@ -164,7 +164,7 @@ LICENSE                   MIT
 | Item | Value |
 |---|---|
 | Channels / motors / steps | 8 / 8 / 8 |
-| RMS samples | ≥ 32 over ≥ 1 AC cycle |
+| RMS samples | ≥ 32 per AC cycle; AC I_rms = combined true RMS over 4 cycles (`AC_AVG_CYCLES`) |
 | Sensor \|I\| cap | 40 A |
 | UV/OV grace | 750 ms after DC Start |
 | No-current trip | 2 s below 0.05 × In while Running |

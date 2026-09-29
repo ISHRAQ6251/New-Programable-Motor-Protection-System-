@@ -153,6 +153,15 @@ static bool registerSensorFault(MotorRuntime *rt, uint32_t now) {
   return false;
 }
 
+static void resetMotorAcWindow(int mi) {
+  for (int p = 0; p < s_motors[mi].phase_count; p++) {
+    const uint8_t c = s_motors[mi].channels[p];
+    if (c < MAX_CHANNELS) {
+      sensingResetAcWindow(&s_ch[c]);
+    }
+  }
+}
+
 static void zeroEnergy(int mi) {
   for (int p = 0; p < s_motors[mi].phase_count; p++) {
     const uint8_t c = s_motors[mi].channels[p];
@@ -162,6 +171,7 @@ static void zeroEnergy(int mi) {
       s_ch[c].last_v = 0;
       s_ch[c].v_filt = 0;
       s_ch[c].v_filt_valid = 0;
+      sensingResetAcWindow(&s_ch[c]);
     }
   }
   {
@@ -296,10 +306,38 @@ static void handleCmd(const Command &cmd) {
     for (int i = 0; i < MAX_MOTORS; i++) {
       const bool was_used = s_motors[i].used;
       const bool now_used = tmp[i].used;
+      bool reassign = false;
+      if (was_used || now_used) {
+        if (s_motors[i].phase_count != tmp[i].phase_count ||
+            s_motors[i].is_ac != tmp[i].is_ac ||
+            s_motors[i].mains_hz != tmp[i].mains_hz) {
+          reassign = true;
+        } else {
+          for (int p = 0; p < MAX_PHASES; p++) {
+            if (s_motors[i].channels[p] != tmp[i].channels[p]) {
+              reassign = true;
+              break;
+            }
+          }
+        }
+      }
       if (was_used && !now_used) {
         motorRelaysOff(i);
         s_rt[i].status = MST_STOPPED;
         zeroEnergy(i);
+      } else if (reassign) {
+        resetMotorAcWindow(i);
+        for (int p = 0; p < MAX_PHASES; p++) {
+          const uint8_t oldc = s_motors[i].channels[p];
+          if (oldc < MAX_CHANNELS) {
+            s_ch[oldc].last_rms = 0;
+          }
+          const uint8_t c = tmp[i].channels[p];
+          if (c < MAX_CHANNELS) {
+            sensingResetAcWindow(&s_ch[c]);
+            s_ch[c].last_rms = 0;
+          }
+        }
       }
       s_motors[i] = tmp[i];
       if (!now_used) {
@@ -588,6 +626,15 @@ static void applyMotorSample(SampleJob *job, uint32_t now, float dt) {
   if (s_rt[mi].status != MST_RUNNING) {
     return;
   }
+  if (job->is_ac) {
+    for (int p = 0; p < job->phase_count; p++) {
+      const uint8_t c = job->channels[p];
+      if (c >= MAX_CHANNELS) {
+        continue;
+      }
+      job->res[p].rms = sensingPushAcCycle(&s_ch[c], job->res[p].sum_i2, job->res[p].n);
+    }
+  }
   float hottest = 0;
   FaultType trip_ft = FT_NONE;
   float trip_i = 0;
@@ -844,20 +891,65 @@ void protectionTask(void *arg) {
     memcpy(chcopy, s_ch, sizeof(chcopy));
     xSemaphoreGive(s_mu);
 
+    uint8_t ac50[MAX_CHANNELS];
+    uint8_t ac60[MAX_CHANNELS];
+    int n50 = 0;
+    int n60 = 0;
     for (int j = 0; j < nj; j++) {
-      SampleJob *job = &jobs[j];
-      for (int p = 0; p < job->phase_count; p++) {
-        const uint8_t c = job->channels[p];
+      if (!jobs[j].is_ac) {
+        continue;
+      }
+      uint8_t *list = (jobs[j].mains_hz == 60) ? ac60 : ac50;
+      int *n = (jobs[j].mains_hz == 60) ? &n60 : &n50;
+      for (int p = 0; p < jobs[j].phase_count; p++) {
+        const uint8_t c = jobs[j].channels[p];
         if (c >= MAX_CHANNELS) {
           continue;
         }
-        job->res[p] = sensingSample((int)c, &chcopy[c], job->is_ac, job->mains_hz);
-        if (!job->is_ac && job->voltage_channel >= MAX_CHANNELS) {
-          job->vres[p] = voltageSample((int)c, &chcopy[c]);
+        int have = 0;
+        for (int k = 0; k < *n; k++) {
+          if (list[k] == c) {
+            have = 1;
+            break;
+          }
+        }
+        if (!have && *n < MAX_CHANNELS) {
+          list[(*n)++] = c;
         }
       }
-      if (!job->is_ac && job->voltage_channel < MAX_CHANNELS) {
-        job->vsense = voltageSample((int)job->voltage_channel, &chcopy[job->voltage_channel]);
+    }
+    SampleResult ac_by_ch[MAX_CHANNELS];
+    memset(ac_by_ch, 0, sizeof(ac_by_ch));
+    if (n50 > 0) {
+      sensingSampleAcChannels(ac50, n50, chcopy, 50, ac_by_ch);
+    }
+    if (n60 > 0) {
+      sensingSampleAcChannels(ac60, n60, chcopy, 60, ac_by_ch);
+    }
+
+    for (int j = 0; j < nj; j++) {
+      SampleJob *job = &jobs[j];
+      if (job->is_ac) {
+        for (int p = 0; p < job->phase_count; p++) {
+          const uint8_t c = job->channels[p];
+          if (c < MAX_CHANNELS) {
+            job->res[p] = ac_by_ch[c];
+          }
+        }
+      } else {
+        for (int p = 0; p < job->phase_count; p++) {
+          const uint8_t c = job->channels[p];
+          if (c >= MAX_CHANNELS) {
+            continue;
+          }
+          job->res[p] = sensingSample((int)c, &chcopy[c], 0, job->mains_hz);
+          if (job->voltage_channel >= MAX_CHANNELS) {
+            job->vres[p] = voltageSample((int)c, &chcopy[c]);
+          }
+        }
+        if (job->voltage_channel < MAX_CHANNELS) {
+          job->vsense = voltageSample((int)job->voltage_channel, &chcopy[job->voltage_channel]);
+        }
       }
       xSemaphoreTake(s_mu, portMAX_DELAY);
       applyMotorSample(job, now, dt);
@@ -882,6 +974,13 @@ void protectionTask(void *arg) {
         s_rt[i].energy = 0;
         s_rt[i].power_is_w = s_motors[i].is_ac ? 0 : 1;
         s_rt[i].low_current_ms = 0;
+        for (int p = 0; p < s_motors[i].phase_count; p++) {
+          const uint8_t c = s_motors[i].channels[p];
+          if (c < MAX_CHANNELS) {
+            s_ch[c].last_rms = 0;
+            sensingResetAcWindow(&s_ch[c]);
+          }
+        }
         continue;
       }
     }

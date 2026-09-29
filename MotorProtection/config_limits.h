@@ -16,6 +16,7 @@ static const uint8_t VCH_SAME  = 0xFF;
 static const uint8_t RELAY_ACTIVE_HIGH_DEFAULT = 0;
 
 static const int RMS_SAMPLES     = 32;
+static const int AC_AVG_CYCLES   = 4;
 static const int CAL_SAMPLES     = 64;
 static const float SENSOR_I_CAP  = 40.0f;
 static const float VADC_MIN      = 0.05f;

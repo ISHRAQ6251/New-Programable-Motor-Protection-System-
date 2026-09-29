@@ -318,10 +318,10 @@ Reset is enabled in Fault and Cooling. It returns the motor to Stopped and silen
 2. **Name** — letters, digits, space, `_ - .` only.
 3. **Operating current In (A)** — the motor's rated current. Trip steps are multiples of this.
 4. **Supply** — AC or DC.
-   - AC: pick **50 Hz** or **60 Hz** (RMS window) and **Rated AC voltage** (nameplate only; not sensed, not a trip).
+    - AC: pick **50 Hz** or **60 Hz** (sets the mains-cycle length for the 4-cycle RMS window) and **Rated AC voltage** (nameplate only; not sensed, not a trip).
    - DC: optional **Undervoltage** and **Overvoltage** in volts. **0 disables** that trip. If both are set, OV must be greater than UV. Live V is the terminal downstream of the relay.
    - DC **Voltage sense channel**: **Same as current** (default — ADS tap on current CH0) or pin **CH0–CH7** for a dedicated voltage tap. Voltage taps may be shared; current channels may not.
-5. **Stall current (A)** — instantaneous trip if RMS reaches this on the next sample window, unless stall recovery is enabled. Must exceed In and every I²t step current.
+5. **Stall current (A)** — trip if the averaged RMS reaches this on the next update, unless stall recovery is enabled. AC lag is up to four mains cycles (~80 ms at 50 Hz). Must exceed In and every I²t step current.
 6. **Starting current (A)** — optional inrush threshold used only during the startup window. Set `0` to disable. Typical values are 1–4× In, but never below In.
 7. **Inrush duration (ms)** — how long after Start the elevated startup threshold is used. Set `0` to disable. Typical values are 500–3000 ms for most motors.
 8. **Cooling time (s)** — wait after a trip before auto-restart or Fault. Also used as the I²t decay time while running below pickup.
@@ -341,7 +341,7 @@ Example curve for In = 10 A:
 | 3 | 1.5 | 30 | 15 A allowed for 30 s of equivalent energy |
 | 4 | 6.0 | 2 | 60 A allowed for 2 s of equivalent energy |
 
-Stall might be set to 45 A so a locked rotor trips on the next ~20 ms window, without waiting for I²t.
+Stall might be set to 45 A so a locked rotor trips on the next averaged RMS update (~80 ms at 50 Hz for AC), without waiting for I²t.
 
 ### 5.2.1 Stall recovery (jam release)
 
@@ -459,7 +459,7 @@ config_limits.h         MAX_CHANNELS=8, steps, NVS keys, AP and login defaults
 types.h                 MotorRecord, commands, statuses, snapshots
 relays.cpp              Polarity-aware coil drive
 buzzer.cpp              Non-blocking LEDC tone sequencer
-sensing.cpp             Current ADC calibrate, true RMS (AC) or mean |i| (DC)
+sensing.cpp             Current ADC calibrate, true RMS (AC 4-cycle rolling) or mean |i| (DC)
 voltage.cpp / voltage.h 2× ADS1115, i2cInitOnce, voltageReprobe, GAIN_ONE 128SPS, VOLT_DIAG
 protection.cpp          I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / inrush / power
 motor_store.cpp         NVS blob + login credentials
@@ -484,7 +484,7 @@ Boot order in `setup()` (order matters for fail-safe):
 
 Three tasks after boot:
 
-- **Protection task** — sample current ADC and ADS1115 **outside** the status mutex, then apply I²t / stall / UV / OV / sensor-fault. Never writes SD or HTTP.
+- **Protection task** — sample current ADC and ADS1115 **outside** the status mutex (AC channels of the same mains frequency are interleaved over one cycle; RMS is the rolling 4-cycle combined true RMS), then apply I²t / stall / UV / OV / sensor-fault. Never writes SD or HTTP.
 - **`uiTask`** — core 0: poll the encoder, render the OLED, drive the GPIO 48 WS2812, and post Start/Stop through the shared gate. Reads state only through the snapshot.
 - **`loop()`** — play queued buzzer tones, append SD log lines, keep the async web server running.
 
@@ -528,22 +528,26 @@ This is **classic I²t energy**, not inverse-time interpolation and not independ
 
 ### 7.2 RMS vs DC
 
-AC current is a sine; a single ADC sample can be zero at the wrong instant. The firmware takes **at least 32 samples** spanning **at least one full cycle**:
+AC current is a sine; a single ADC sample can be zero at the wrong instant. Each cycle the firmware takes **at least 32 samples** spanning **at least one full mains cycle**:
 
-- 50 Hz → 20 ms window
-- 60 Hz → 16.67 ms window
+- 50 Hz → 20 ms per cycle
+- 60 Hz → 16.67 ms per cycle
 
-True RMS:
+Displayed and protected AC current is **one combined true RMS** over a rolling window of **`AC_AVG_CYCLES` (4) consecutive cycles** (80 ms at 50 Hz, 66.7 ms at 60 Hz; at least 128 samples). It is `sqrt(sum(i²)/N)` over that whole window, not the average of four separate per-cycle RMS values. The window updates every cycle from the last complete cycles collected so far; right after Start it uses only those cycles (no zero or stale pad). It resets on Start, Stop, Reset, zero-current calibration, and channel reassignment. A stopped motor reads **0 A**.
+
+Active AC channels of the same frequency are **interleaved** in one cycle so a full protection pass stays about one cycle, not four sequential windows per channel. The three channels of a 3-phase motor share that same interval.
+
+True RMS over the window:
 
 ```
-I_rms  =  sqrt( mean( i² ) )
+I_rms  =  sqrt( sum(i²) / N )
 ```
 
-DC motors skip RMS and use the mean of |i| over 20 ms.
+`dt` for `E += I_rms² × dt` is wall time between protection-loop starts (the averaged value updates once per cycle / once per loop). DC motors skip RMS and use the mean of |i| over 20 ms.
 
 ### 7.3 Stall
 
-If `I_rms >= stall_amps` after **one** sample window, trip type `STALL` immediately — unless stall recovery is enabled for that motor (see §5.2.1). No I²t wait on the stall path. Typical use without recovery: locked rotor, many times In.
+If `I_rms >= stall_amps` after the next averaged RMS update, trip type `STALL` — unless stall recovery is enabled for that motor (see §5.2.1). AC stall / pickup / I²t lag up to about four mains cycles (~80 ms at 50 Hz). No I²t wait on the stall path. Typical use without recovery: locked rotor, many times In.
 
 With stall recovery: after 500 ms of Running, up to 4 pulses (300 ms off, 500 ms wait). I²t still accumulates during pulses. Exhaustion trips `STALL` and enters Cooling. Jam attempts do not count as auto-restarts.
 
@@ -551,7 +555,7 @@ With stall recovery: after 500 ms of Running, up to 4 pulses (300 ms off, 500 ms
 
 While `jam_phase == IDLE`, trip `SENSOR_FAULT` as follows:
 
-- **Current path** (checked first): mean ADC voltage outside **0.05–3.05 V**, |I_rms| above **40 A**, or a stuck ADC window. This trips on that sample, before stall.
+- **Current path** (checked first): mean ADC voltage outside **0.05–3.05 V**, |I_rms| above **40 A** (AC uses the 4-cycle averaged RMS), or a stuck ADC window. Stuck ADC and out-of-range Vadc stay on the raw cycle samples. This trips on that update, before stall.
 - **DC voltage path** (after stall): ADS1115 missing / I²C timeout, |V_adc| > 4 V, or |V_bus| > 55 V. Needs **3 consecutive voltage faults within 1 s**; a single voltage glitch is ignored.
 
 Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT`, `OV`, `UV`, `I2T`. Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (trip, not latch). Both sensor-fault paths are skipped during jam release.
@@ -617,7 +621,7 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | ACS712 | 30 A, 66 mV/A, divider ×0.6 → 39.6 mV/A |
 | DC voltage | ADS1115 GAIN_ONE 128 SPS, 150 k / 10 k (×16), I²C 14/42 |
 | ADC | 12-bit, 11 dB attenuation, ADC1 only (current) |
-| RMS samples | ≥ 32 over ≥ 1 AC cycle |
+| RMS samples | ≥ 32 per AC cycle; AC I_rms = combined true RMS over 4 cycles (`AC_AVG_CYCLES`) |
 | Sensor |I| cap | 40 A |
 | UV/OV grace | 750 ms after DC Start |
 | No-current trip | Running and max phase `< 0.05 × In` for 2 s |

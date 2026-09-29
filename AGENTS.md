@@ -52,7 +52,7 @@ NVS namespace `mps`, blob of `MotorRecord[8]`. Never stored on SD.
 
 Motor record: name, phase count (1 or 3), assigned channel indices (Auto = lowest free, or pin `ch0`/`ch1`/`ch2` 0–7), AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, starting current (`start_current`, 0 = disabled), inrush duration (`icd_ms`, 0 = disabled), cooling time, auto-restart, stall recovery (jam release, default off), per-channel relay polarity (default active-LOW), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled), optional `voltage_channel` (0–7 or `VCH_SAME` 0xFF = same as current CH0).
 
-Runtime (RAM): per-channel zero ADC, last RMS, I²t energy, voltage zero and last V; per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
+Runtime (RAM): per-channel zero ADC, last RMS (AC = rolling 4-cycle true RMS), I²t energy, voltage zero and last V, AC cycle rings (`ac_sum_i2` / `ac_n`); per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
 
 NVS schema **4** (older blobs are discarded on first boot of this build).
 
@@ -62,7 +62,7 @@ Statuses: Stopped, Running, Fault, Cooling.
 
 ## I²t logic (precise)
 
-Sampling: ≥ 32 samples over ≥ 1 AC cycle (20 ms @ 50 Hz, 16.67 ms @ 60 Hz). True RMS. DC uses a 20 ms mean of |i|, not RMS.
+Sampling: ≥ 32 samples over ≥ 1 AC cycle (20 ms @ 50 Hz, 16.67 ms @ 60 Hz). AC true RMS is one combined `sqrt(sum(i²)/N)` over a rolling window of `AC_AVG_CYCLES` (4) consecutive mains cycles (80 ms @ 50 Hz, 66.7 ms @ 60 Hz; ≥ 128 samples). Partial windows after Start use only cycles collected so far (no zero/stale pad). The window resets on Start, Stop, Reset, zero-current calibration, and channel reassignment; a stopped motor reads 0 A. Active AC channels of the same mains frequency are interleaved in one cycle so a full pass stays ~one cycle, not 4×N sequential. 3-phase channels of one motor share that interval. DC is unchanged: 20 ms mean of |i|, not RMS. `dt` for `E += I_rms² × dt` is wall time between protection-loop starts (the averaged RMS updates once per cycle / once per loop, so `dt` is ~one cycle, never four).
 
 Running and `I_rms >= k_min × In`:
 
@@ -72,9 +72,9 @@ Running and `I_rms >= k_min × In`:
 
 Running and below pickup: `E` decays toward 0 over `cooling_s`.
 
-Stall: `I_rms >= stall_amps` on the next window → trip `STALL` immediately, unless stall recovery is enabled. Then, after `JAM_RELEASE_MIN_RUN_MS` of Running: de-energize 300 ms, re-energize, wait 500 ms, re-check. Up to 4 pulses (`JAM_RELEASE_MAX`). Success (current `< stall_amps`) resumes Running and zeros `jam_count` (does **not** clear the auto-restart counter). Exhaustion trips `STALL` and enters Cooling as usual. Jam attempts are separate from auto-restart. While `jam_phase != JAM_IDLE`, skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t accumulation. No extra grace after jam ends — `JAM_WAIT` is the settle window. During the configured inrush window (`icd_ms` > 0 and `start_current` > 0), the effective stall threshold is `start_current` instead of `stall_amps`.
+Stall: `I_rms >= stall_amps` on the next averaged RMS update → trip `STALL`, unless stall recovery is enabled. AC stall / pickup / I²t / NO_CURRENT therefore lag up to `AC_AVG_CYCLES` mains cycles (~80 ms @ 50 Hz, ~66.7 ms @ 60 Hz) plus one protection pass. Then, after `JAM_RELEASE_MIN_RUN_MS` of Running: de-energize 300 ms, re-energize, wait 500 ms, re-check. Up to 4 pulses (`JAM_RELEASE_MAX`). Success (current `< stall_amps`) resumes Running and zeros `jam_count` (does **not** clear the auto-restart counter). Exhaustion trips `STALL` and enters Cooling as usual. Jam attempts are separate from auto-restart. While `jam_phase != JAM_IDLE`, skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t accumulation. No extra grace after jam ends — `JAM_WAIT` is the settle window. During the configured inrush window (`icd_ms` > 0 and `start_current` > 0), the effective stall threshold is `start_current` instead of `stall_amps`.
 
-Sensor fault, while `jam_phase == JAM_IDLE`. Current path (stuck ADC AC or DC, mean Vadc outside `[0.05, 3.05]` V, or |I| > 40 A) → trip `SENSOR_FAULT` on that sample. DC voltage path (missing ADS1115, I²C timeout / `present=0`, `|Vadc| > 4` V, or `|Vbus| > 55` V) → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s (`SENSOR_FAULT_MIN_COUNT` / `SENSOR_FAULT_WINDOW_MS`). A single voltage glitch is ignored. Auto-restart still applies. Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT` (debounced), `OV`, `UV`, `I2T`.
+Sensor fault, while `jam_phase == JAM_IDLE`. Current path (stuck ADC AC or DC, mean Vadc outside `[0.05, 3.05]` V, or |I| > 40 A on the averaged RMS) → trip `SENSOR_FAULT` on that sample. Stuck ADC and out-of-range Vadc stay on raw cycle samples. DC voltage path (missing ADS1115, I²C timeout / `present=0`, `|Vadc| > 4` V, or `|Vbus| > 55` V) → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s (`SENSOR_FAULT_MIN_COUNT` / `SENSOR_FAULT_WINDOW_MS`). A single voltage glitch is ignored. Auto-restart still applies. Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT` (debounced), `OV`, `UV`, `I2T`.
 
 Running and max phase current `< 0.05 × In` for 2 s → trip `NO_CURRENT` (broken sense wire / open winding / relay that never closed).
 
@@ -90,12 +90,12 @@ Fail-safe: all relay GPIOs forced to the de-energized level at the top of `setup
 
 | Module | File | Status |
 |---|---|---|
-| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 4, UV/OV + rated AC, jam-release, `voltage_channel` / `VCH_SAME`, `start_current` / `icd_ms`, VoltageSample / VoltageDiagnostic |
+| Pins / limits / types | `config_pins.h`, `config_limits.h`, `types.h` | done — I²C 14/42, schema 4, UV/OV + rated AC, jam-release, `voltage_channel` / `VCH_SAME`, `start_current` / `icd_ms`, `AC_AVG_CYCLES`, VoltageSample / VoltageDiagnostic / AC cycle rings |
 | Relays fail-safe | `relays.cpp` | done — GPIO HIGH at top of `setup()` (active-LOW default, OFF=HIGH) then `relaysBegin()`; polarity printed at de-energize |
 | Buzzer named tones | `buzzer.cpp` | done — non-blocking LEDC sequencer |
-| Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean; stuck-ADC Serial |
+| Sensing / RMS | `sensing.cpp` | done — current only, calibrate + true RMS / DC mean; AC rolling `AC_AVG_CYCLES` combined RMS; interleaved `sensingSampleAcChannels`; stuck-ADC Serial |
 | DC voltage ADS1115 | `voltage.cpp` / `voltage.h` | done — `i2cInitOnce()`, `voltageReprobe()`, no `Wire.end()`, 128 SPS asynchronous conversion wait with 35 ms timeout, `s_i2c_mu`, 4-sample average, per-channel `VOLT_DIAG` ring |
-| I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; optional jam release (4× 300/500 ms); 32-entry RAM trip ring; Calibrate calls `voltageReprobe()` off-mutex; 0.9/0.1 V LPF; 750 ms UV/OV grace; `VOLT:` log; dedicated `voltage_channel`; current-path `SENSOR_FAULT` immediate; voltage-path debounce 3/1 s; jam skips `SENSOR_FAULT`; inrush `start_current`/`icd_ms` |
+| I²t / stall / jam release / UV / OV / sensor-fault / NO_CURRENT / power | `protection.cpp` | done — prio 5, core 1; 5 s Task WDT; per-motor sample-then-trip; 3-restart cap; optional jam release (4× 300/500 ms); 32-entry RAM trip ring; Calibrate calls `voltageReprobe()` off-mutex; 0.9/0.1 V LPF; 750 ms UV/OV grace; `VOLT:` log; dedicated `voltage_channel`; current-path `SENSOR_FAULT` immediate; voltage-path debounce 3/1 s; jam skips `SENSOR_FAULT`; inrush `start_current`/`icd_ms`; AC uses rolling 4-cycle RMS everywhere except raw ADC sanity |
 | NVS motor store | `motor_store.cpp` | done — blob + login credentials; load sanitizes; stall must exceed In/steps; cooling ≤ 86400 s; AP-password auth_pass restored to `mps500`; manual `ch0`–`ch2` or Auto; `voltage_channel` |
 | SoftAP | `net_ap.cpp` | done — `MPS-505` / `mps50005` (WPA2 needs ≥ 8 chars) |
 | SD fault log | `sd_log.cpp` | done — optional mount, no-op if missing; power_W / power_VA columns |
@@ -105,7 +105,7 @@ Fail-safe: all relay GPIOs forced to the de-energized level at the top of `setup
 
 Boot Serial prints AP SSID/password/IP, dashboard login (`mps` / `mps500`, **not** AP pass), and free heap (`HEAP:`). Heap is also logged after each web response and ~1 s in the protection task. First boot `NVS: no motor blob — starting empty` is expected.
 
-Protection samples current ADC and ADS1115 **outside** the status mutex (copy channel zeros, sample, then re-lock to apply I²t / UV / OV). Calibrate copies channels out, calls `voltageReprobe()` (scan + probe, no `Wire.end()`), then ADC + ADS zeros, copies zeros back. Channel map is fixed: CH0–3 always 0x49, CH4–7 always 0x48. Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins; firmware re-binds `Wire.begin(14, 42)` after each `begin()` and never calls `Wire.end()`. `loop()` prints `I2C: diag ads_ok=[…] vcal=[…]` at most every 5 s when a chip or channel zero is not ready. Buzzer uses Arduino-ESP32 3.x LEDC: `ledcAttach(pin,freq,res)`, `ledcWrite(pin,duty)`, `ledcChangeFrequency(PIN_BUZZER, freq, 10)` (3-arg).
+Protection samples current ADC and ADS1115 **outside** the status mutex (copy channel zeros, sample, then re-lock to apply I²t / UV / OV). Active AC channels of the same Hz are interleaved in one mains-cycle window; `sensingPushAcCycle()` then folds that cycle into the rolling `AC_AVG_CYCLES` combined RMS before I²t / stall / display. Calibrate copies channels out, calls `voltageReprobe()` (scan + probe, no `Wire.end()`), then ADC + ADS zeros, copies zeros back. Channel map is fixed: CH0–3 always 0x49, CH4–7 always 0x48. Adafruit BusIO's `ads.begin()` may call `Wire.begin()` with no pins; firmware re-binds `Wire.begin(14, 42)` after each `begin()` and never calls `Wire.end()`. `loop()` prints `I2C: diag ads_ok=[…] vcal=[…]` at most every 5 s when a chip or channel zero is not ready. Buzzer uses Arduino-ESP32 3.x LEDC: `ledcAttach(pin,freq,res)`, `ledcWrite(pin,duty)`, `ledcChangeFrequency(PIN_BUZZER, freq, 10)` (3-arg).
 
 Arduino IDE: board **ESP32S3 Dev Module**, Flash **16 MB**, PSRAM **OPI PSRAM**, Core Debug Level **Debug**. Libraries: ESPAsyncWebServer + AsyncTCP (ESP32Async forks), Adafruit ADS1X15 + Adafruit BusIO, U8g2 (SH1106 panel), Adafruit NeoPixel (GPIO 48 WS2812). The panel runs in `uiTask` on core 0 and reaches motor state only through `protectionSnapshot()` / `protectionCopyLog()`; `setup()` publishes relay / ADS / SD / calibration results to the splash via `uiBootStage()` / `uiBootNote()`.
 
@@ -139,7 +139,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - FreeRTOS task architecture: protection + `loop()` on core 1, Wi-Fi + UI on core 0 (originally two tasks; panel adds `uiTask`)
 - SoftAP only — no STA, no WiFiManager, no DDNS
 - AP SSID/password **fixed** `MPS-505` / `mps50005` (not MAC-derived; WPA2 min 8 chars)
-- Stall = immediate next RMS window
+- Stall = next averaged RMS update (AC lags up to 4 cycles)
 - I²t decays over cooling time while below pickup
 - Max 8 protection steps
 - Board ESP32-S3-N16R8
@@ -151,7 +151,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 
 - Arduino-ESP32 3.x + ESPAsyncWebServer + AsyncTCP
 - NVS namespace `mps`, single blob key `motors`; auth keys `auth_user` / `auth_pass`
-- RMS sample count = 32 minimum
+- RMS sample count = 32 minimum per AC cycle; AC displayed/protected current is combined true RMS over `AC_AVG_CYCLES` (4) consecutive cycles
 - Sensor-fault |I| cap = 40 A
 - ADC attenuation = 11 dB
 - Channel allocation = Auto (lowest free) or pinned `ch0`/`ch1`/`ch2` 0–7 from the dashboard
@@ -218,6 +218,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - DC voltage noise: ADS average is `V_AVG_SAMPLES` (4) in `voltageSample()`, then 0.9/0.1 LPF on `Vbus` (`ChannelRuntime.v_filt`). UV/OV uses the filtered value after `UV_GRACE_MS` (750). Serial `VOLT: ch=… adc=… zero=… bus=…` every 2 s while Running. Do not trip on a single raw ADS sample.
 - Relay GPIOs are forced OUTPUT to the de-energized level at the very top of `setup()`, before `Serial.begin()` (HIGH for default active-LOW). `relaysBegin()` repeats the fail-safe. `RELAY_ACTIVE_HIGH_DEFAULT = 0`.
 - Add/Edit channel dropdowns (`ch0`/`ch1`/`ch2`, -1 = Auto) and DC `vch` (`VCH_SAME` or 0–7) are stored in the NVS motor blob (schema 4). Used current channels are disabled in the other dropdowns; voltage taps may be shared.
+- AC RMS is a rolling combined true RMS over `AC_AVG_CYCLES` (4). Do not average four per-cycle RMS values. Do not sample four cycles sequentially per channel. Interleave active AC channels of the same Hz in one cycle. `dt` is wall time between protection-loop starts, not 4× the cycle. Raw stuck-ADC / Vadc-range checks stay on the single-cycle samples.
 
 ## Next planned steps
 
@@ -231,6 +232,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 
 ## Changelog
 
+- 2026-09-28 — AC current is combined true RMS over a rolling `AC_AVG_CYCLES` (4) mains-cycle window, not one cycle. Interleaved sampling keeps a full pass ~one cycle; `dt` stays wall time between loop starts. Averaged RMS is used everywhere except raw ADC sanity. Window resets on Start/Stop/Reset/calibrate/channel reassignment. Stall/I²t lag up to ~80 ms @ 50 Hz.
 - 2026-09-23 — Jam-release sensor suppression: all sensor-fault checks are skipped while `jam_phase != JAM_IDLE`, so a pulsed/stalled motor cannot trip `SENSOR_FAULT` prematurely. The jam state resets the stale debounce counter before the next recovery attempt, and `processJamRelease` still decides success or exhaustion.
 - 2026-09-22 — Stall suppression and startup inrush protection: current-path `SENSOR_FAULT` is immediate and checked before stall; voltage-path `SENSOR_FAULT` needs 3 consecutive faults within 1 s; `start_current` + `icd_ms` override the effective stall threshold during the startup window. Export CSV also falls back to the RAM ring when no SD card is mounted, and jam recovery is capped at 4 attempts.
 - 2026-09-22 — I²C contention and swapped bench wiring review: ADS1115 logical map is CH0–3→0x49 and CH4–7→0x48; voltage reads use 128 SPS with mutex-free conversion waits and a 35 ms deadline; protection readiness and boot/docs diagnostics updated.

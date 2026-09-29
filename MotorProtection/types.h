@@ -103,6 +103,10 @@ struct ChannelRuntime {
   uint8_t  v_calibrated;
   float    v_filt;
   uint8_t  v_filt_valid;
+  double   ac_sum_i2[AC_AVG_CYCLES];
+  uint16_t ac_n[AC_AVG_CYCLES];
+  uint8_t  ac_cycles;
+  uint8_t  ac_head;
 };
 
 struct MotorRuntime {
