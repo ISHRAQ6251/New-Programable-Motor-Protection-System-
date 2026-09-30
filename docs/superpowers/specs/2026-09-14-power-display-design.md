@@ -1,8 +1,11 @@
 # Power calculation, display, and logging — Design
 
-Date: 2026-09-14 (updated to live firmware as of `700db56`)
-Status: Approved (uses only data the firmware already acquires; no new sensors or sampling passes). Live UV/OV grace is 750 ms; NVS schema is 4.
-Scope: Extend v2 firmware in `MotorProtection/`. Not a rewrite. Not compiled in this environment.
+> This is the original design. The code in `MotorProtection/` is the final reference.
+> Differences vs the shipped sketch (commit `728d802`): protection computes power once per loop (`dt` = wall time between starts, ~one AC cycle when AC motors run), not ~1 Hz; dashboard energy sub-line still says "since boot" while energy resets on Start; dedicated `voltage_channel` uses `V_vch × ΣI` rather than `Σ V_ch × I_ch`.
+
+Date: 2026-09-14
+Status: Approved original design (uses only data the firmware already acquires; no new sensors or sampling passes).
+Scope: Extend v2 firmware in `MotorProtection/`. Not a rewrite.
 
 ## 1. Purpose
 
@@ -24,7 +27,7 @@ Power factor cannot be measured with this hardware. AC values are always `VA`, n
 |---|---|
 | Where computed | `protection.cpp`, in the same locked region that applies I²t, from the off-mutex samples of that pass |
 | Extra sampling | None. Reuse `SampleResult` / `VoltageSample` already taken |
-| Sample rate | One value per protection pass (~1 Hz), consistent with dashboard poll |
+| Sample rate | One value per protection pass (`dt` = wall time between loop starts). Dashboard poll is ~1 s |
 | Units | DC → `W`; AC → `VA`. Unit also fixes the energy label (`Wh` / `VAh`) |
 | Storage | RAM only, in `MotorRuntime`. No `MotorRecord` change, no NVS schema bump |
 | Lifetime | Accumulates only while Running. Displays `0.0` in Stopped / Fault / Cooling. Resets on Start and reboot |
@@ -74,7 +77,7 @@ uint8_t power_is_w;
 - `zeroEnergy()` also clears `power` and `energy`; the idle branch of the task clears them too, keeping Stopped / Fault / Cooling at `0.0`.
 - DC during the 750 ms UV/OV grace after Start: power is computed and accumulated normally (V and I are both real there).
 - `SENSOR_FAULT` logs the power computed from the same reading the `current_A` column already reflects.
-- DC sums per channel (`Σ V_ch × I_ch`). A single-phase DC motor has one term; the unusual 3-phase DC record sums all three, matching the per-channel voltage taps and UV/OV checks.
+- DC with `VCH_SAME`: sums per channel (`Σ V_ch × I_ch`). DC with a dedicated `voltage_channel`: `P = V_vch × ΣI`. A single-phase DC motor has one current term.
 
 ## 7. Rounding
 

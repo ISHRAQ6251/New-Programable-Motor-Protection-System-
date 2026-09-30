@@ -1,8 +1,10 @@
 # MPS-505 Programmable Motor Protection — User Manual
 
-Firmware for an ESP32-S3 that replaces a bimetallic thermal overload relay. It measures motor current, runs an I²t thermal model, and trips relays before the motor overheats. Configuration and live status are served on a desktop web dashboard hosted by the ESP32 SoftAP.
+Firmware for an ESP32-S3 that replaces a bimetallic thermal overload relay. It measures motor current, runs an I²t thermal model, and trips relays before the motor overheats. Configuration and live status are served on a desktop web dashboard hosted by the ESP32 SoftAP. A local OLED + encoder panel provides status and Start/Stop at the enclosure.
 
 This document covers hardware wiring, Arduino IDE setup, libraries, day-to-day use, and a plain-language explanation of the firmware and the trip math.
+
+The project is **complete**: submitted, showcased, and archived. The firmware in `MotorProtection/` is the source of truth. Default SoftAP (`MPS-505` / `mps50005`) and dashboard (`mps` / `mps500`) credentials are prototype defaults; change them on the Security page.
 
 ---
 
@@ -283,7 +285,7 @@ If you previously joined a leftover SSID such as `MPS`, forget that network on t
 
 Default username **mps**, password **mps500**.
 
-This is a themed HTML page, not the browser's built-in Basic Auth dialog. A successful login sets an HttpOnly cookie `mps_sess` (valid 8 hours). Use **Log out** in the header, or change credentials on the Security page (that invalidates the session and you must sign in again).
+This is a themed HTML page, not the browser's built-in Basic Auth dialog. A successful login sets cookie `mps_sess` (HttpOnly, SameSite=Strict, Max-Age 28800 s / 8 hours). Use **Log out** in the header, or change credentials on the Security page (that invalidates the session and you must sign in again). Default `mps` / `mps500` are prototype values.
 
 ---
 
@@ -377,7 +379,7 @@ During the first `icd_ms` after Start, the effective stall threshold is `start_c
 Two paths, both skipped while jam-release pulses run (`jam_phase != IDLE`):
 
 - **Current path** (stuck ADC, mean Vadc outside 0.05–3.05 V, or |I| > 40 A): trip `SENSOR_FAULT` on that sample. Checked **before** stall.
-- **DC voltage path** (missing ADS1115, I²C timeout, |Vadc| > 4 V, or |Vbus| > 55 V): trip `SENSOR_FAULT` only after **3 consecutive voltage faults within 1 s**. A single voltage glitch is ignored.
+- **DC voltage path** (missing ADS1115, I²C timeout, Vadc > 4 V or Vadc < −0.05 V, or |Vbus| > 55 V): trip `SENSOR_FAULT` only after **3 consecutive voltage faults within 1 s**. A single voltage glitch is ignored.
 
 Auto-restart still applies. This is a trip, not a latch.
 
@@ -485,8 +487,8 @@ Boot order in `setup()` (order matters for fail-safe):
 Three tasks after boot:
 
 - **Protection task** — sample current ADC and ADS1115 **outside** the status mutex (AC channels of the same mains frequency are interleaved over one cycle; RMS is the rolling 4-cycle combined true RMS), then apply I²t / stall / UV / OV / sensor-fault. Never writes SD or HTTP.
-- **`uiTask`** — core 0: poll the encoder, render the OLED, drive the GPIO 48 WS2812, and post Start/Stop through the shared gate. Reads state only through the snapshot.
-- **`loop()`** — play queued buzzer tones, append SD log lines, keep the async web server running.
+- **`uiTask`** — core 0, priority 2: poll the encoder, render the OLED, drive the GPIO 48 WS2812, and post Start/Stop through the shared gate. Reads state only through the snapshot. Not on the Task WDT.
+- **`loop()`** — core 1 (Arduino default): play queued buzzer tones and append SD log lines. ESPAsyncWebServer runs from its own callbacks; `loop()` does not pump it.
 
 Web handlers and the local panel enqueue `START` / `STOP` / `RESET` / `CALIBRATE` / `RELOAD`. Both read a mutex-guarded snapshot (RMS, DC volts, status, thermal %, heap, SD flag, ADS ok) and share `protectionCanStart()` before a Start.
 
@@ -556,7 +558,7 @@ With stall recovery: after 500 ms of Running, up to 4 pulses (300 ms off, 500 ms
 While `jam_phase == IDLE`, trip `SENSOR_FAULT` as follows:
 
 - **Current path** (checked first): mean ADC voltage outside **0.05–3.05 V**, |I_rms| above **40 A** (AC uses the 4-cycle averaged RMS), or a stuck ADC window. Stuck ADC and out-of-range Vadc stay on the raw cycle samples. This trips on that update, before stall.
-- **DC voltage path** (after stall): ADS1115 missing / I²C timeout, |V_adc| > 4 V, or |V_bus| > 55 V. Needs **3 consecutive voltage faults within 1 s**; a single voltage glitch is ignored.
+- **DC voltage path** (after stall): ADS1115 missing / I²C timeout, V_adc > 4 V or V_adc < −0.05 V, or |V_bus| > 55 V. Needs **3 consecutive voltage faults within 1 s**; a single voltage glitch is ignored.
 
 Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT`, `OV`, `UV`, `I2T`. Same path as other trips: relays off, fault tone, SD log if present, Cooling. Auto-restart still applies (trip, not latch). Both sensor-fault paths are skipped during jam release.
 
@@ -570,7 +572,7 @@ After **750 ms** of Running (so the relay has closed and the tap is live):
 - If UV > 0 and filtered `V_bus < UV` → trip `UNDERVOLT`
 - If OV > 0 and filtered `V_bus > OV` → trip `OVERVOLT`
 
-0 disables that trip. AC rated voltage is never compared. Serial prints `VOLT: ch=… adc=… zero=… bus=…` every 2 s while Running.
+0 disables that trip. AC rated voltage is never compared. Serial prints `VOLT: ch=… adc=… zero=… bus=… filt=… uv=… ov=…` every 2 s while Running.
 
 The voltage tap used for UV/OV is the motor's **Voltage sense channel** (Same as current CH0, or a dedicated CH0–CH7). Wire that ADS input to the motor terminal downstream of the relay that actually feeds the load.
 
@@ -588,7 +590,7 @@ Key points:
 
 - **Power factor is unknown.** This hardware cannot measure the phase angle between voltage and current, so an AC reading is apparent power in volt-amperes, never true watts. Do not read `VA` as `W`.
 - **3-phase uses the sum of currents**, which equals `√3 × V_LL × I_avg` when the motor is balanced. If one phase is high, the sum still reflects total current rather than only the worst phase. Voltage is still assumed balanced.
-- **Energy** (`Wh` for DC, `VAh` for AC) accumulates only while the motor is Running, at roughly one sample per second. It shows `0.00` in Stopped, Fault, and Cooling, and resets on every Start and on reboot. Treat the label "since boot" as "since the last Start".
+- **Energy** (`Wh` for DC, `VAh` for AC) accumulates only while the motor is Running, once per protection pass (`E += P × dt / 3600`, with `dt` the wall time between loop starts). It shows `0.00` in Stopped, Fault, and Cooling, and resets on every Start and on reboot. The dashboard sub-line still says "since boot"; treat that as "since the last Start".
 - Values come from the same window that trips the motor, so the fault CSV records the power at the moment of the trip.
 
 ### 7.7 State machine
@@ -616,12 +618,13 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 | SoftAP SSID / password | `MPS-505` / `mps50005` |
 | SoftAP IP | 192.168.4.1 |
 | Dashboard login | `mps` / `mps500` (change on Security) |
-| Session cookie | `mps_sess`, HttpOnly, 8 hours |
+| Session cookie | `mps_sess`, HttpOnly, SameSite=Strict, Max-Age 28800 s (8 hours) |
 | Channels / motors / steps | 8 / 8 / 8 |
 | ACS712 | 30 A, 66 mV/A, divider ×0.6 → 39.6 mV/A |
 | DC voltage | ADS1115 GAIN_ONE 128 SPS, 150 k / 10 k (×16), I²C 14/42 |
 | ADC | 12-bit, 11 dB attenuation, ADC1 only (current) |
 | RMS samples | ≥ 32 per AC cycle; AC I_rms = combined true RMS over 4 cycles (`AC_AVG_CYCLES`) |
+| Current-path Vadc window | mean ADC voltage outside 0.05–3.05 V trips `SENSOR_FAULT` |
 | Sensor |I| cap | 40 A |
 | UV/OV grace | 750 ms after DC Start |
 | No-current trip | Running and max phase `< 0.05 × In` for 2 s |
@@ -671,4 +674,12 @@ Start is rejected from Fault/Cooling, if zeros were never calibrated, or (DC) if
 - This firmware is a university protection prototype. Commissioning on a real motor still needs a fused supply, correct relay rating, and a mechanical emergency stop independent of the ESP32.
 - Relays default OFF at boot. Confirm polarity before the first Start.
 - SoftAP has no internet isolation from a production network — use it on the bench, not as a WAN gateway.
-- Change the dashboard password on first real use (Security page).
+- Change the dashboard password on first real use (Security page). Default SoftAP `MPS-505` / `mps50005` and dashboard `mps` / `mps500` are prototype credentials.
+
+---
+
+## 11. Project status
+
+Completed, submitted, and showcased. Firmware on the hardware is confirmed working. This repository is archived documentation plus the final Arduino sketch.
+
+TODO: photos, dashboard screenshots, and bench measurements (trip times, power vs meter) if they should appear in this manual.

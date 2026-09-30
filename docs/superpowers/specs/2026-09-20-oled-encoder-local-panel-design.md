@@ -1,7 +1,10 @@
 # Local OLED + encoder panel — design
 
-Date: 2026-09-20 (updated to live firmware as of `700db56`)
-Status: implemented (source only; not compiled in this environment). Pins: SH1106 on shared `Wire` GPIO 14/42, KY-040 CLK 47 / DT 46 / SW 3, WS2812 GPIO 48.
+> This is the original design. The code in `MotorProtection/` is the final reference.
+> Differences vs the shipped sketch (commit `728d802`): constructor `U8G2_SH1106_128X64_NONAME_F_HW_I2C` is in use; splash auto-advance, 160 ms refresh, 450 ms icon frames, 40 ms debounce, and 600 ms long-press match `ui.cpp`.
+
+Date: 2026-09-20
+Status: Implemented. Pins: SH1106 on shared `Wire` GPIO 14/42, KY-040 CLK 47 / DT 46 / SW 3, WS2812 GPIO 48.
 
 ## Purpose
 
@@ -173,5 +176,5 @@ Changed: `config_pins.h` (panel pins), `types.h` (`TONE_BACK`), `buzzer.h` /
 
 ## Verification constraints
 
-This environment has no Arduino-ESP32 toolchain, so the sketch is not compiled
-here. Bench checks are listed in `AGENTS.md` under "Next planned steps".
+The sketch is not compiled in this documentation environment. The local panel
+shipped with the rest of the firmware and is confirmed working on the hardware.

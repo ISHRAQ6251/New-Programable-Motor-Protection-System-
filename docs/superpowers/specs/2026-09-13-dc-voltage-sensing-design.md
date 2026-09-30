@@ -1,8 +1,11 @@
 # DC voltage sensing + AC rated-voltage field — Design
 
-Date: 2026-09-13 (updated to live firmware as of `700db56`)
-Status: Approved (hardware, Adafruit driver, UV/OV optional, tap downstream of relay). Live UV/OV grace is 750 ms; ADS data rate is 128 SPS; NVS schema is 4.
-Scope: Extend v1 firmware in `MotorProtection/`. Not a rewrite. Not compiled in this environment.
+> This is the original design. The code in `MotorProtection/` is the final reference.
+> Differences vs the shipped sketch (commit `728d802`): voltage-path ADC sanity is `vadc > 4.0 V` or `vadc < -0.05 V` (not symmetric `|Vadc| > 4 V`); `protectionCanStart()` indexes `ads_ok[c < 4 ? 0 : 1]` while `channelAdsReady()` / `chipOf()` use `c < 4 ? 1 : 0`; NVS schema is 4; UV/OV grace is 750 ms; ADS data rate is 128 SPS.
+
+Date: 2026-09-13
+Status: Approved original design (hardware, Adafruit driver, UV/OV optional, tap downstream of relay).
+Scope: Extend v1 firmware in `MotorProtection/`. Not a rewrite.
 
 ## 1. Purpose
 
@@ -53,7 +56,7 @@ V_bus  = (V_adc - v_zero) * 16.0        //  (R1+R2)/R2
 Sensor-fault (voltage path, Running DC only, skipped while jam-release pulses run):
 
 - ADS missing / I2C fail on that channel's chip (`present=0`)
-- `|V_adc|` near full-scale (> 4.0 V) or `|V_bus|` > 55 V
+- `V_adc > 4.0 V` or `V_adc < -0.05 V`, or `|V_bus|` > 55 V
 
 Voltage-path `SENSOR_FAULT` trips only after 3 consecutive faults within 1 s. Current-path `SENSOR_FAULT` (stuck ADC, Vadc outside `[0.05, 3.05]` V, |I| > 40 A) is immediate and is checked before stall.
 

@@ -1,0 +1,19 @@
+# Arduino IDE
+*.hex
+*.elf
+*.bin
+*.map
+*.lst
+build/
+.pio/
+.vscode/
+.idea/
+*.code-workspace
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.directory

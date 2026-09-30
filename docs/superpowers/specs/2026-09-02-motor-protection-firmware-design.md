@@ -1,7 +1,10 @@
 # ESP32-S3 Programmable Motor Protection Firmware — Design
 
-Date: 2026-09-02 (updated to live firmware as of `700db56`: DC voltage, power, stall recovery, RAM log, channel select, inrush, SENSOR_FAULT split, 128 SPS)
-Status: Approved. Implemented in `MotorProtection/` (not compiled in this environment). Focused delta specs: `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md`, `docs/superpowers/specs/2026-09-14-power-display-design.md`, `docs/superpowers/specs/2026-09-20-oled-encoder-local-panel-design.md`.
+> This is the original design. The code in `MotorProtection/` is the final reference.
+> Differences vs the shipped sketch (commit `728d802`, 2026-09-29): AC current is combined true RMS over a rolling `AC_AVG_CYCLES` (4) window, not one cycle; `dt` is wall time between protection-loop starts; `protectionCanStart()` maps ADS chips as `ads_ok[c < 4 ? 0 : 1]` (opposite of `channelAdsReady()` / `chipOf()`); dashboard energy still labels "since boot" while energy resets on Start; `MPS_TEST_HOOKS` was never added; NVS has no separate schema-marker key (magic + `schema_version` live in the motors blob).
+
+Date: 2026-09-02 (original; firmware later gained DC voltage, power, stall recovery, RAM log, channel select, inrush, SENSOR_FAULT split, 128 SPS, and 4-cycle AC RMS).
+Status: Approved original design. Implemented in `MotorProtection/`. Focused delta specs: `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md`, `docs/superpowers/specs/2026-09-14-power-display-design.md`, `docs/superpowers/specs/2026-09-20-oled-encoder-local-panel-design.md`.
 Scope: ESP32-S3 firmware only. Sensors, relays, SD breakout, voltage taps, and buzzer are treated as already wired.
 
 ## 1. Purpose
@@ -31,7 +34,7 @@ Correctness and code clarity matter more than polish. This is a university engin
 | Mains frequency | Per motor, 50 or 60 Hz (AC only) |
 | I²t model | Classic energy: `E += I_rms² × dt`, trip vs `(k×In)² × t_trip` |
 | Below pickup | Decay `E` toward 0 over that motor's cooling time |
-| Stall | Immediate on the next RMS window, independent of I²t |
+| Stall | Next averaged RMS update (AC: rolling 4-cycle window), independent of I²t |
 | Sensor fault | Current path trips on that sample; DC voltage path needs 3 consecutive faults in 1 s. Both skipped while jam-release pulses run. Auto-restart still applies |
 | Protection steps | Max 8 per motor |
 | Max motors / channels | 8 / 8 |
@@ -182,15 +185,14 @@ Validation: AC requires `mains_hz` 50/60 and `rated_ac_v` in 0.1–1000. DC requ
 
 NVS namespace `mps`. Keys:
 
-- `motors` — blob of `MotorRecord[MAX_MOTORS]`
+- `motors` — blob of `MotorBlob` (`magic`, `schema_version`, `MotorRecord[MAX_MOTORS]`)
 - `auth_user`, `auth_pass` — dashboard login credentials
-- schema marker
 
 Corrupt, missing, or wrong-schema blob → empty motor list, Serial warning, do not invent motors. Protection and web still run.
 
 ### 5.2 Runtime (RAM only)
 
-Per channel: `zero_adc`, `last_rms`, `energy_a2s` (I²t accumulator), `v_zero`, `last_v`, `v_calibrated`, last sample ticks.
+Per channel: `zero_mv`, `last_rms`, `energy_a2s` (I²t accumulator), `v_zero`, `last_v`, `v_calibrated`, `v_filt`, AC cycle rings (`ac_sum_i2` / `ac_n`), last sample ticks.
 
 Per motor: `status`, `uptime_ms`, `fault_count`, `cooling_deadline_ms`, last fault type, `power` (latest `W` or `VA`), `energy` (`Wh` / `VAh`, RAM only), voltage-path sensor-fault debounce `sensor_fault_count` / `sensor_fault_first_ms`, jam-release `jam_count` / `jam_phase` / `jam_deadline_ms`. Power/energy update once per protection pass, show `0.0` when not Running, and are never written to NVS. See `2026-09-14-power-display-design.md`.
 
@@ -210,17 +212,17 @@ Delete is allowed only from `Stopped` or `Fault`, never from `Running` or `Cooli
 
 ### 6.1 Sampling
 
-- AC: at least 32 samples spanning at least one full cycle (20 ms at 50 Hz, 16.67 ms at 60 Hz). True RMS: `sqrt(mean(i²))`. Never a single instantaneous read.
+- AC: at least 32 samples spanning at least one full cycle (20 ms at 50 Hz, 16.67 ms at 60 Hz). Per-cycle true RMS is `sqrt(mean(i²))`. Displayed and protected AC current is one combined `sqrt(sum(i²)/N)` over a rolling window of `AC_AVG_CYCLES` (4) consecutive cycles. Never a single instantaneous read. Active AC channels of the same Hz are interleaved in one cycle.
 - DC: mean of |i| over a 20 ms window (same function, no RMS).
 - 3-phase: all three channels sampled in one pass; any phase may trip the group.
-- Motors are scanned round-robin. Worst-case stall detect latency is `N_running × window` (documented; acceptable vs thermal timescales).
+- `dt` for `E += I_rms² × dt` is wall time between protection-loop starts (capped at 5 s), not 4× the cycle. Sample each running motor then trip immediately.
 - Current: `i = (vadc - vzero) / 0.0396` amperes.
 
 Calibration:
 
 - All 8 channels at boot (motors are still Stopped, relays OFF).
 - On-demand from the UI only if every motor is `Stopped` or `Fault`. Otherwise reject.
-- Each channel: N samples with no current expected; store mean ADC as `zero_adc`.
+- Each channel: N samples (`CAL_SAMPLES` = 64) with no current expected; store mean millivolts as `zero_mv`.
 - DC voltage zero: same window, with relays OFF the tap sits at ~0 V. Store mean AIN volts as `v_zero` and set `v_calibrated`. Calibration runs ADC and I²C outside the status mutex (channels copied out, zeros copied back).
 
 ### 6.2 Energy model
@@ -237,11 +239,11 @@ While `Running` and `I_rms < k_min × In`:
 
 `E` is also zeroed on Stop, on Reset, and when leaving Cooling into Stopped.
 
-Thermal load % (dashboard): `0` below pickup; otherwise `100 * E / E_trip` of the active step, clamped 0–100+.
+Thermal load % (dashboard): `0` below pickup; otherwise `100 * E / E_trip` of the active step on each phase, then the hottest phase. Not clamped (can exceed 100).
 
 ### 6.3 Stall
 
-If `I_rms >= stall_amps` after one sample window → trip `STALL` immediately, unless `stall_recovery` is enabled. During the inrush window (`icd_ms` > 0 and `start_current` > 0) the effective stall threshold is `start_current`. No I²t involvement on the stall path.
+If `I_rms >= stall_amps` after the next averaged RMS update → trip `STALL`, unless `stall_recovery` is enabled. AC lag is up to four mains cycles. During the inrush window (`icd_ms` > 0 and `start_current` > 0) the effective stall threshold is `start_current`. No I²t involvement on the stall path.
 
 Optional jam release (fixed constants, not user-timed): after `JAM_RELEASE_MIN_RUN_MS` (500) of Running, de-energize `JAM_RELEASE_OFF_MS` (300), re-energize, wait `JAM_RELEASE_WAIT_MS` (500), re-check. Up to `JAM_RELEASE_MAX` (4) pulses. Success zeros `jam_count` only (not the auto-restart counter). Exhaustion trips `STALL` and Cooling as usual. While `jam_phase != JAM_IDLE`: skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t accumulation. No extra grace after jam ends.
 
@@ -249,8 +251,8 @@ Optional jam release (fixed constants, not user-timed): after `JAM_RELEASE_MIN_R
 
 While `jam_phase == JAM_IDLE`, on an assigned channel:
 
-- Current path (checked before stall): stuck ADC (unchanged across a full window within 1 LSB) while Running (AC or DC), mean Vadc outside `[0.05 V, 3.05 V]`, or |I_rms| > 40 A → trip `SENSOR_FAULT` on that sample.
-- DC voltage path (Running DC only, after stall): ADS1115 missing / I²C fail / `present=0`, `|V_adc| > 4.0 V`, or `|V_bus| > 55 V` → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s. A single voltage glitch is ignored. On trip, Serial prints `VOLT_DIAG` / `VOLT_DIAG_SAMPLE` / `VOLT_DIAG_HISTORY`.
+- Current path (checked before stall): stuck ADC (unchanged across a full window) while Running (AC or DC), mean Vadc outside `[0.05 V, 3.05 V]`, or |I_rms| > 40 A (AC uses the 4-cycle averaged RMS) → trip `SENSOR_FAULT` on that sample. Stuck ADC and out-of-range Vadc stay on the raw cycle samples.
+- DC voltage path (Running DC only, after stall): ADS1115 missing / I²C fail / `present=0`, `V_adc > 4.0 V` or `V_adc < -0.05 V`, or `|V_bus| > 55 V` → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s. A single voltage glitch is ignored. On trip, Serial prints `VOLT_DIAG` / `VOLT_DIAG_SAMPLE` / `VOLT_DIAG_HISTORY`.
 
 Same trip path as other faults (relays off, tone, log, cooling). Auto-restart still applies. Both paths are skipped while `jam_phase != JAM_IDLE`.
 
@@ -384,7 +386,7 @@ If a library fails to compile on Arduino-ESP32 3.x, swap to the maintained ESP32
 - State-machine unit-style tests on host are out of scope for Arduino IDE; keep functions pure enough to reason about (`energy_update()`, `active_step()`, `should_trip()`).
 - Serial boot banner checklist
 - SoftAP join + `/login` then dashboard 200; unauthenticated `/api` returns 401
-- Simulated RMS via a test hook compiling only if `MPS_TEST_HOOKS` is defined (optional, later)
+- Simulated RMS via a test hook compiling only if `MPS_TEST_HOOKS` is defined (optional; never added to the shipped sketch)
 
 ## 14. Out of scope
 
