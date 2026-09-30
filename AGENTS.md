@@ -1,10 +1,10 @@
 # AGENTS.md — ESP32-S3 Programmable Motor Protection Firmware
 
-Source of truth for this repository. Update at the end of every work session or milestone.
+Source of truth for this repository. The project is **complete, submitted, showcased, and archived**. The code in `MotorProtection/` is final; documentation must match it. Do not reopen resolved decisions.
 
 ## Project summary
 
-University firmware project: replace a bimetallic thermal overload relay with an ESP32-S3 I²t motor protector.
+University firmware project (completed): replace a bimetallic thermal overload relay with an ESP32-S3 I²t motor protector.
 
 - Up to 8 channels = 8 ACS712-30A sensors + 8 relays + 8 DC voltage taps (2× ADS1115)
 - 1-phase motor = 1 channel; 3-phase motor = 3 linked channels, one dashboard row
@@ -14,13 +14,13 @@ University firmware project: replace a bimetallic thermal overload relay with an
 - Power: DC true `W`; AC apparent `VA` at rated V; energy RAM-only
 - Desktop web dashboard on a fixed SoftAP (`MPS-505` / `mps50005`)
 - Local panel: SH1106 128x64 OLED on the shared ADS1115 I2C bus (`Wire` GPIO 14/42) + KY-040 encoder (rotate / short / long press) + onboard WS2812 status LED (GPIO 48), with buzzer feedback
-- Themed `/login` page + HttpOnly session cookie (`mps` / `mps500` default)
+- Themed `/login` page + HttpOnly session cookie `mps_sess` (default login `mps` / `mps500`)
 - Motor config in NVS; SD card used for persistent fault logs; 32-entry RAM ring feeds the web log page when SD is missing
 - Arduino IDE sketch, three FreeRTOS tasks (Wi-Fi/UI core 0, protection/loop core 1)
 
 Hardware is treated as already wired. This repo is firmware only.
 
-Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall, updated for v2), `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta), `docs/superpowers/specs/2026-09-14-power-display-design.md` (power display / logging), `docs/superpowers/specs/2026-09-20-oled-encoder-local-panel-design.md` (local OLED + encoder panel). Roadmap: `docs/ROADMAP.md`. I²C bench: `docs/I2C_TROUBLESHOOTING.md`.
+Design specs: `docs/superpowers/specs/2026-09-02-motor-protection-firmware-design.md` (overall; original design with a shipped-code note), `docs/superpowers/specs/2026-09-13-dc-voltage-sensing-design.md` (DC voltage / rated-AC delta), `docs/superpowers/specs/2026-09-14-power-display-design.md` (power display / logging), `docs/superpowers/specs/2026-09-20-oled-encoder-local-panel-design.md` (local OLED + encoder panel). Roadmap: `docs/ROADMAP.md`. I²C bench: `docs/I2C_TROUBLESHOOTING.md`.
 
 License: MIT (`LICENSE`). Project overview: `README.md`. User-facing guide: `docs/USER_MANUAL.md`.
 
@@ -52,7 +52,7 @@ NVS namespace `mps`, blob of `MotorRecord[8]`. Never stored on SD.
 
 Motor record: name, phase count (1 or 3), assigned channel indices (Auto = lowest free, or pin `ch0`/`ch1`/`ch2` 0–7), AC/DC, mains Hz (50/60 if AC), rated AC voltage (AC only, static), operating current `In`, stall current, starting current (`start_current`, 0 = disabled), inrush duration (`icd_ms`, 0 = disabled), cooling time, auto-restart, stall recovery (jam release, default off), per-channel relay polarity (default active-LOW), N ≤ 8 steps of `(k × In, t_trip)`, DC undervoltage / overvoltage (0 = that trip disabled), optional `voltage_channel` (0–7 or `VCH_SAME` 0xFF = same as current CH0).
 
-Runtime (RAM): per-channel zero ADC, last RMS (AC = rolling 4-cycle true RMS), I²t energy, voltage zero and last V, AC cycle rings (`ac_sum_i2` / `ac_n`); per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip`). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
+Runtime (RAM): per-channel zero ADC, last RMS (AC = rolling 4-cycle true RMS), I²t energy, voltage zero and last V, AC cycle rings (`ac_sum_i2` / `ac_n`); per-motor status, uptime, fault count, latest power and session energy. Dashboard thermal % = hottest phase (`100 * E / E_trip` of the **active step** on each phase). Live V is DC only. Power is DC true `W` (`V × I`), AC apparent `VA` (`V_rated × I_rms`, or `(V_rated/√3) × ΣI` for 3-phase). Energy (`Wh`/`VAh`) is RAM only, accumulates while Running, shows `0.0` otherwise, resets on Start and reboot. Never stored in NVS.
 
 NVS schema **4** (older blobs are discarded on first boot of this build).
 
@@ -74,7 +74,7 @@ Running and below pickup: `E` decays toward 0 over `cooling_s`.
 
 Stall: `I_rms >= stall_amps` on the next averaged RMS update → trip `STALL`, unless stall recovery is enabled. AC stall / pickup / I²t / NO_CURRENT therefore lag up to `AC_AVG_CYCLES` mains cycles (~80 ms @ 50 Hz, ~66.7 ms @ 60 Hz) plus one protection pass. Then, after `JAM_RELEASE_MIN_RUN_MS` of Running: de-energize 300 ms, re-energize, wait 500 ms, re-check. Up to 4 pulses (`JAM_RELEASE_MAX`). Success (current `< stall_amps`) resumes Running and zeros `jam_count` (does **not** clear the auto-restart counter). Exhaustion trips `STALL` and enters Cooling as usual. Jam attempts are separate from auto-restart. While `jam_phase != JAM_IDLE`, skip stall / UV / OV / `NO_CURRENT` / `SENSOR_FAULT`; keep I²t accumulation. No extra grace after jam ends — `JAM_WAIT` is the settle window. During the configured inrush window (`icd_ms` > 0 and `start_current` > 0), the effective stall threshold is `start_current` instead of `stall_amps`.
 
-Sensor fault, while `jam_phase == JAM_IDLE`. Current path (stuck ADC AC or DC, mean Vadc outside `[0.05, 3.05]` V, or |I| > 40 A on the averaged RMS) → trip `SENSOR_FAULT` on that sample. Stuck ADC and out-of-range Vadc stay on raw cycle samples. DC voltage path (missing ADS1115, I²C timeout / `present=0`, `|Vadc| > 4` V, or `|Vbus| > 55` V) → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s (`SENSOR_FAULT_MIN_COUNT` / `SENSOR_FAULT_WINDOW_MS`). A single voltage glitch is ignored. Auto-restart still applies. Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT` (debounced), `OV`, `UV`, `I2T`.
+Sensor fault, while `jam_phase == JAM_IDLE`. Current path (stuck ADC AC or DC, mean Vadc outside `[0.05, 3.05]` V, or |I| > 40 A on the averaged RMS) → trip `SENSOR_FAULT` on that sample. Stuck ADC and out-of-range Vadc stay on raw cycle samples. DC voltage path (missing ADS1115, I²C timeout / `present=0`, `Vadc > 4` V or `Vadc < -0.05` V, or `|Vbus| > 55` V) → trip `SENSOR_FAULT` only after 3 consecutive voltage faults within 1 s (`SENSOR_FAULT_MIN_COUNT` / `SENSOR_FAULT_WINDOW_MS`). A single voltage glitch is ignored. Auto-restart still applies. Trip order in one window: current `SENSOR_FAULT`, `STALL`, voltage `SENSOR_FAULT` (debounced), `OV`, `UV`, `I2T`.
 
 Running and max phase current `< 0.05 × In` for 2 s → trip `NO_CURRENT` (broken sense wire / open winding / relay that never closed).
 
@@ -86,7 +86,7 @@ Fail-safe: all relay GPIOs forced to the de-energized level at the top of `setup
 
 ## Current implementation status
 
-**v2** in `MotorProtection/` (Arduino IDE sketch). Not compiled here (no Arduino-ESP32 toolchain in this environment).
+**Complete and archived.** Firmware in `MotorProtection/` (Arduino IDE sketch) is the submitted, showcased build. Confirmed working on the hardware. This documentation environment has no Arduino-ESP32 toolchain and does not compile the sketch.
 
 | Module | File | Status |
 |---|---|---|
@@ -169,7 +169,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Live status poll interval ≈ 1 s
 - Security page exists to change dashboard login credentials (invalidates session)
 - Core assignment: Wi-Fi + UI on core 0, protection + loop on core 1
-- `MPS_TEST_HOOKS` compile flag is optional and not required for v1
+- `MPS_TEST_HOOKS` compile flag was optional in the original spec and was never added to the shipped sketch
 - Local panel: SH1106 (**not** SSD1306) on the shared ADS1115 bus `Wire` GPIO 14/42 via U8g2 `HW_I2C`; KY-040 on GPIO 47/46/3 with a state-table quadrature decoder (one step per detent) and 40 ms switch debounce, 600 ms long-press threshold; onboard WS2812 on GPIO 48 via Adafruit NeoPixel (one-wire, never `s_i2c_mu`)
 - `protectionCanStart()` is the single Start gate shared by the web API and the panel; `protectionCopyLog()` exposes a non-destructive 32-entry RAM trip ring (the SD `protectionPopLog()` queue keeps its single consumer in `loop()`); web log uses that ring when SD is missing (`ram_only`)
 - `buzzer.cpp` guards its sequencer with a mutex because `uiTask` (core 0) and `loop()` (core 1) both issue tones; panel Start/Stop success tone comes from protection, not the panel, so it is not doubled
@@ -182,11 +182,15 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - AP credentials changed from MAC-derived to `MPS-505` / `mps50005` (was `mps505`, too short for WPA2)
 - AC voltage sensing (ZMPT101B) considered and descoped — AC uses a manual rated-voltage field only; do not re-open without asking
 
-### Still open (none blocking v2)
+### Known limitations
 
-- Exact Arduino IDE board-menu checkboxes beyond Flash 16 MB / OPI PSRAM (USB CDC on boot, etc.) — documented as Dev Module defaults in `docs/USER_MANUAL.md`
-- Physical SD card on first bench test — firmware treats missing card as valid
-- Exact U8g2 symbol for the SH1106 `HW_I2C` variant — constructor is `(rotation, reset)`; pins are bound on `Wire`. `_SW_I2C` only if hardware I2C is genuinely unavailable
+- Exact Arduino IDE board-menu checkboxes beyond Flash 16 MB / OPI PSRAM (USB CDC on boot, etc.) follow Dev Module defaults in `docs/USER_MANUAL.md`
+- Missing SD is valid: protection runs; the web Log page and OLED Fault Log use the 32-entry RAM ring (`ram_only`, lost on reboot)
+- U8g2 constructor in use is `U8G2_SH1106_128X64_NONAME_F_HW_I2C(rotation, reset)`; pins are bound on `Wire`. `_SW_I2C` only if hardware I2C is genuinely unavailable
+- No STA / NTP; timestamps are `millis()` uptime
+- AC voltage is a manual rated field only
+- Local panel does not add/edit/delete motors and does not show jam state
+- Flashing schema 4 discards older motor blobs
 
 ## Bench notes (do not regress)
 
@@ -209,7 +213,7 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - `uiBegin()` starts `uiTask`, which calls `protectionSnapshot()` within 160 ms. Create `s_mu` / `s_i2c_mu` / motor-store / buzzer / web mutexes (and protection queues) before any `begin()`. Do not take those handles until `*MutexInit()` has run.
 - `uiTask` is not on the Task WDT; only the protection task is.
 - Current-path `SENSOR_FAULT` (stuck ADC, Vadc outside `[0.05, 3.05]` V, |I| > 40 A) trips on that sample while `jam_phase == JAM_IDLE` and is checked before stall.
-- Voltage-path `SENSOR_FAULT` (missing ADS, I²C timeout, `|Vadc| > 4` V, `|Vbus| > 55` V) requires 3 consecutive faults within 1 s; a single voltage glitch is ignored.
+- Voltage-path `SENSOR_FAULT` (missing ADS, I²C timeout, `Vadc > 4` V or `Vadc < -0.05` V, `|Vbus| > 55` V) requires 3 consecutive faults within 1 s; a single voltage glitch is ignored.
 - All sensor-fault checks are skipped while `jam_phase != JAM_IDLE`. A stalled/pulsed motor is low-resistance and voltage/current readings can be temporarily abnormal; `processJamRelease` determines the outcome.
 - Inrush current protection: configurable `start_current` and `icd_ms` suppress startup stall false trips while the motor is still accelerating.
 - Clear Logs now clears both SD and RAM ring; if either succeeds, the button returns ok.
@@ -220,15 +224,9 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - Add/Edit channel dropdowns (`ch0`/`ch1`/`ch2`, -1 = Auto) and DC `vch` (`VCH_SAME` or 0–7) are stored in the NVS motor blob (schema 4). Used current channels are disabled in the other dropdowns; voltage taps may be shared.
 - AC RMS is a rolling combined true RMS over `AC_AVG_CYCLES` (4). Do not average four per-cycle RMS values. Do not sample four cycles sequentially per channel. Interleave active AC channels of the same Hz in one cycle. `dt` is wall time between protection-loop starts, not 4× the cycle. Raw stuck-ADC / Vadc-range checks stay on the single-cycle samples.
 
-## Next planned steps
+## Final status
 
-1. Flash this build — confirm `/login` then dashboard (no browser Basic Auth prompt); Serial `dash pass: mps500`
-2. Confirm Serial `I2C: initialized SDA=14 SCL=42` then `ADS: 0x48/0x49 ok` (or `not found` if unpopulated); DC Start disabled without the chip for that motor
-3. Inject current / short a sense pin to verify I²t, stall, SENSOR_FAULT, and NO_CURRENT trips
-4. DC: apply voltage downstream of a closed relay; confirm live V and UV/OV trips (0 = disabled)
-5. Confirm missing-SD path (log page banner) and present-SD CSV write
-6. Power: DC known load vs bench meter; AC hand-check `V_rated × I_rms`; 3-phase current-unbalance check; trip CSV carries `power_W` / `power_VA`; energy reads `0.00` after reboot
-7. Local panel: confirm SH1106 at 0x3C on `Wire` (14/42 pins), encoder detents/tones (CLK 47 / DT 46 / SW 3), GPIO 48 WS2812 status LED, the shared Start gate, and the staged splash
+Project complete. Firmware confirmed working on the hardware; submitted and showcased; archived. No further firmware work is planned in this repository. Documentation is aligned to commit `728d802` (`feat: compute AC RMS over a rolling 4-cycle window`, 2026-09-29).
 
 ## Changelog
 
@@ -252,3 +250,5 @@ MotorProtection/web_html.h    real HTML/CSS/JS dashboard + login
 - 2026-09-22 — Final web log behavior: Export CSV remains visible without an SD card and downloads either the SD file or the newest-first 32-entry RAM ring as `faults.csv`. Stall recovery limit is now 4 pulses.
 
 Last firmware: I²C `i2cInitOnce` / `voltageReprobe` / no `Wire.end()` (origin `455debf` and follow-up quality), on top of Calibrate re-probe (`2f53bc7`), divider 150 kΩ / 10 kΩ (`b5e3754`), and safety review (`912a982`). Current review: 128 SPS conversion scheduling, 35 ms timeout margin, and swapped logical ADS channel map.
+
+Last firmware commit in this clone: `728d802` (2026-09-29).
